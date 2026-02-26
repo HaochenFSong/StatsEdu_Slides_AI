@@ -225,6 +225,55 @@ def sanitize_bullet_text(value: object) -> str:
     return text
 
 
+def normalize_material_list(raw: object, max_items: int = 3) -> list[str]:
+    items: list[str] = []
+    if isinstance(raw, list):
+        source = raw
+    elif isinstance(raw, str):
+        source = re.split(r"[;\n]+", raw)
+    else:
+        source = []
+    for item in source:
+        text = clamp_sentence(item, 88)
+        if text and not is_presenter_directive(text):
+            items.append(text)
+    # stable dedupe
+    out: list[str] = []
+    for item in items:
+        if item not in out:
+            out.append(item)
+    return out[:max_items]
+
+
+def compose_student_bullets(
+    definition: str,
+    context: str,
+    materials: list[str],
+    bullets: list[str],
+    *,
+    max_items: int = 6,
+) -> list[str]:
+    combined: list[str] = []
+    if definition:
+        combined.append(f"Definition: {definition}")
+    if context:
+        combined.append(f"Context: {context}")
+    for material in materials:
+        combined.append(f"Useful material: {material}")
+    combined.extend(bullets)
+
+    out: list[str] = []
+    for item in combined:
+        txt = clamp_sentence(sanitize_bullet_text(item), MAX_BULLET_CHARS)
+        if not txt or is_presenter_directive(txt):
+            continue
+        if txt not in out:
+            out.append(txt)
+        if len(out) >= max_items:
+            break
+    return out
+
+
 def extract_json_object(text: str) -> dict[str, object]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -272,6 +321,12 @@ def normalize_sections(raw_title: str, raw_slides: object, fallback_title: str, 
             layout = sanitize_text(item.get("layout", "concept")).lower() or "concept"
             if layout not in {"title", "concept", "formula", "simulation", "example", "activity", "summary"}:
                 layout = "concept"
+            definition = clamp_sentence(item.get("definition", ""), 96)
+            context = clamp_sentence(item.get("context", ""), 96)
+            materials = normalize_material_list(
+                item.get("studentMaterials", item.get("materials", [])),
+                max_items=3,
+            )
             example = clamp_sentence(item.get("example", ""), MAX_EXAMPLE_CHARS)
             activity = clamp_sentence(item.get("activity", ""), MAX_ACTIVITY_CHARS)
             equation = str(item.get("equation", "")).strip()
@@ -282,11 +337,12 @@ def normalize_sections(raw_title: str, raw_slides: object, fallback_title: str, 
             if is_presenter_directive(notes):
                 notes = ""
 
-            has_content = bool(bullets or example or activity or equation or r_chunk)
+            has_content = bool(bullets or definition or context or materials or example or activity or equation or r_chunk)
             if not has_content:
                 continue
             if len(bullets) < 2 and layout not in {"simulation", "formula"}:
                 bullets = infer_bullets(f"{title}\n{slide_title}")[:3]
+            bullets = compose_student_bullets(definition, context, materials, bullets, max_items=6)
 
             sections.append(
                 {
@@ -294,6 +350,9 @@ def normalize_sections(raw_title: str, raw_slides: object, fallback_title: str, 
                     "subtitle": subtitle,
                     "bullets": bullets[:6],
                     "layout": layout,
+                    "definition": definition,
+                    "context": context,
+                    "studentMaterials": materials,
                     "example": example,
                     "activity": activity,
                     "equation": equation,
@@ -332,6 +391,9 @@ def normalize_slide_obj(raw: object, idx: int) -> dict[str, object]:
             "subtitle": "",
             "bullets": ["Add key idea.", "Add supporting example."],
             "layout": "concept",
+            "definition": "",
+            "context": "",
+            "studentMaterials": [],
             "example": "",
             "activity": "",
             "equation": "",
@@ -344,6 +406,9 @@ def normalize_slide_obj(raw: object, idx: int) -> dict[str, object]:
     layout = sanitize_text(raw.get("layout", "concept")).lower() or "concept"
     if layout not in {"title", "concept", "formula", "simulation", "example", "activity", "summary"}:
         layout = "concept"
+    definition = clamp_sentence(raw.get("definition", ""), 96)
+    context = clamp_sentence(raw.get("context", ""), 96)
+    materials = normalize_material_list(raw.get("studentMaterials", raw.get("materials", [])), max_items=3)
     example = clamp_sentence(raw.get("example", ""), MAX_EXAMPLE_CHARS)
     activity = clamp_sentence(raw.get("activity", ""), MAX_ACTIVITY_CHARS)
     equation = str(raw.get("equation", "")).strip()
@@ -359,6 +424,7 @@ def normalize_slide_obj(raw: object, idx: int) -> dict[str, object]:
                 bullets.append(text)
     if len(bullets) < 2 and layout not in {"simulation", "formula"}:
         bullets = ["Add key idea.", "Add supporting example."]
+    bullets = compose_student_bullets(definition, context, materials, bullets, max_items=6)
     if is_unhelpful_source_sentence(notes):
         notes = ""
     if is_presenter_directive(notes):
@@ -368,6 +434,9 @@ def normalize_slide_obj(raw: object, idx: int) -> dict[str, object]:
         "subtitle": subtitle,
         "bullets": bullets[:6],
         "layout": layout,
+        "definition": definition,
+        "context": context,
+        "studentMaterials": materials,
         "example": example,
         "activity": activity,
         "equation": equation,
@@ -734,6 +803,16 @@ def call_anthropic_json(system_prompt: str, user_prompt: str) -> dict[str, objec
     return extract_json_object("\n".join(text_parts))
 
 
+def call_provider_json(provider: str, system_prompt: str, user_prompt: str) -> dict[str, object]:
+    if provider == "openai":
+        return call_openai_json(system_prompt, user_prompt)
+    if provider == "gemini":
+        return call_gemini_json(system_prompt, user_prompt)
+    if provider == "anthropic":
+        return call_anthropic_json(system_prompt, user_prompt)
+    raise RuntimeError(f"Unsupported STATEDU_LLM_PROVIDER: {provider}")
+
+
 def maybe_generate_with_llm(
     *,
     prompt: str,
@@ -763,21 +842,6 @@ def maybe_generate_with_llm(
             provider,
         )
 
-    system_prompt = (
-        "You are a senior instructional designer and statistics professor. "
-        "Return strict JSON only with keys: title, slides. "
-        "slides must be an array of 3-40 objects. "
-        "Each slide object must include: "
-        "title (string), subtitle (string), bullets (array of 1-6 concise strings), "
-        "layout (one of: title, concept, formula, simulation, example, activity, summary), "
-        "example (string, optional), activity (string, optional), equation (string, optional), "
-        "notes (string, optional), rChunk (string, optional R code body without markdown fences). "
-        "Do not output literal '{.fragment}' tokens. "
-        "Design for teaching: setup assumptions, show one formula, run one simulation or computation, then interpret. "
-        "Write grammatical, learner-friendly sentences only. "
-        "Audience-facing slide copy only; do not include presenter coaching language."
-    )
-
     previous_context = ""
     if previous_slides:
         slim = []
@@ -794,41 +858,113 @@ def maybe_generate_with_llm(
                 )
         previous_context = json.dumps(slim, ensure_ascii=True)
 
-    user_prompt = (
+    source_excerpt_short = source_excerpt[:7000] if source_excerpt else ""
+    stage_warnings: list[str] = []
+
+    template_system = (
+        "You are Agent 1: slide template planner for statistics education. "
+        "Return strict JSON only with keys: title, template. "
+        "template must be an array of 3-40 objects with keys: "
+        "slideIndex (integer), title (string), layout (one of: title, concept, formula, simulation, example, activity, summary), "
+        "purpose (string). "
+        "Plan a coherent teaching progression."
+    )
+    template_user = (
         f"Primary prompt:\n{prompt.strip()}\n\n"
-        f"Output format target: {output_format}\n"
-        f"Animation preference: {animation}\n"
         f"Requested slide count: {target_count}\n"
         f"Teaching style profile: {teaching_style}\n"
-        "Audience: undergraduate statistics learners unless user says otherwise.\n"
-        "Slide quality bar: avoid generic bullets; include applied context and interpretation.\n"
+        f"Output format target: {output_format}\n"
+        "Audience: undergraduate statistics learners unless specified otherwise.\n"
     )
-    if source_excerpt:
-        user_prompt += f"\nSource excerpt (possibly truncated):\n{source_excerpt}\n"
     if feedback:
-        user_prompt += f"\nRefinement feedback:\n{feedback}\n"
+        template_user += f"\nRefinement feedback:\n{feedback}\n"
     if previous_context:
-        user_prompt += f"\nExisting slide draft to improve:\n{previous_context}\n"
+        template_user += f"\nExisting slides context:\n{previous_context}\n"
+    template_user += "\nReturn JSON only."
 
-    user_prompt += (
-        "\nReturn JSON only. Do not add markdown fences or explanation. "
-        "Maintain a coherent narrative from intro to recap. "
-        "Include at least one `formula` slide and one `simulation` or `example` slide with runnable `rChunk` when format is quarto."
-        " Keep each bullet under 18 words and avoid verbose speaker-note style paragraphs."
+    template_raw = call_provider_json(provider, template_system, template_user)
+    template_title = sanitize_text(template_raw.get("title", "")) or fallback_title
+    template_slides = template_raw.get("template", template_raw.get("slides", []))
+    if not isinstance(template_slides, list) or len(template_slides) < 3:
+        raise RuntimeError(f"{provider}/{model} template stage returned invalid template.")
+
+    content_system = (
+        "You are Agent 2: content writer for statistics slides. "
+        "Return strict JSON only with keys: title, slides. "
+        "slides must be an array with same length/order as template. "
+        "Each slide object must include: title, subtitle, layout, bullets (2-6), "
+        "definition (string), context (string), studentMaterials (array of 1-3 strings), "
+        "example (optional), activity (optional), equation (optional), rChunk (optional). "
+        "Audience-facing slide copy only. No presenter coaching language."
     )
+    content_user = (
+        f"Prompt:\n{prompt.strip()}\n\n"
+        f"Teaching style: {teaching_style}\n"
+        f"Animation: {animation}\n"
+        "Quality requirements:\n"
+        "- Include definition, context, and useful materials for students on each teaching slide.\n"
+        "- Keep bullets concise and grammatical.\n"
+        "- Include at least one formula slide and one simulation/example slide.\n"
+        f"\nTemplate JSON:\n{json.dumps(template_slides, ensure_ascii=True)}\n"
+    )
+    if source_excerpt_short:
+        content_user += f"\nSource excerpt:\n{source_excerpt_short}\n"
+    if feedback:
+        content_user += f"\nRefinement feedback:\n{feedback}\n"
+    content_user += "\nReturn JSON only."
 
-    if provider == "openai":
-        raw = call_openai_json(system_prompt, user_prompt)
-    elif provider == "gemini":
-        raw = call_gemini_json(system_prompt, user_prompt)
-    elif provider == "anthropic":
-        raw = call_anthropic_json(system_prompt, user_prompt)
-    else:
-        raise RuntimeError(f"Unsupported STATEDU_LLM_PROVIDER: {provider}")
+    content_raw = call_provider_json(provider, content_system, content_user)
+    draft_title = sanitize_text(content_raw.get("title", "")) or template_title
+    draft_slides = content_raw.get("slides", [])
+    if not isinstance(draft_slides, list) or len(draft_slides) < 3:
+        raise RuntimeError(f"{provider}/{model} content stage returned too few slides.")
+
+    review_system = (
+        "You are Agent 3: quality reviewer for statistics lecture slides. "
+        "Return strict JSON only with keys: needsCorrection (boolean), issues (array), summary (string). "
+        "Each issue must include: slideIndex (integer), severity (low|medium|high), problem (string), fix (string). "
+        "Review for correctness, clarity, and whether each slide has definition/context/student material value."
+    )
+    review_user = (
+        f"Prompt:\n{prompt.strip()}\n\n"
+        f"Teaching style: {teaching_style}\n"
+        f"Slides draft JSON:\n{json.dumps(draft_slides, ensure_ascii=True)}\n"
+        "\nReturn JSON only."
+    )
+    review_raw = call_provider_json(provider, review_system, review_user)
+    issues_raw = review_raw.get("issues", [])
+    issues = issues_raw if isinstance(issues_raw, list) else []
+    needs_correction = bool(review_raw.get("needsCorrection", False)) or len(issues) > 0
+
+    final_title = draft_title
+    final_slides = draft_slides
+    if needs_correction:
+        correct_system = (
+            "You are Agent 4: correction editor for slide decks. "
+            "Return strict JSON only with keys: title, slides. "
+            "Apply reviewer issues while preserving narrative flow and slide count."
+        )
+        correct_user = (
+            f"Original prompt:\n{prompt.strip()}\n\n"
+            f"Review issues:\n{json.dumps(issues, ensure_ascii=True)}\n"
+            f"\nDraft slides:\n{json.dumps(draft_slides, ensure_ascii=True)}\n"
+            "\nReturn corrected JSON only."
+        )
+        try:
+            corrected_raw = call_provider_json(provider, correct_system, correct_user)
+            corrected_title = sanitize_text(corrected_raw.get("title", "")) or draft_title
+            corrected_slides = corrected_raw.get("slides", [])
+            if isinstance(corrected_slides, list) and len(corrected_slides) >= 3:
+                final_title = corrected_title
+                final_slides = corrected_slides
+            else:
+                stage_warnings.append("Correction stage returned invalid slides; kept draft.")
+        except Exception as exc:  # noqa: BLE001
+            stage_warnings.append(f"Correction stage failed; kept draft ({exc}).")
 
     title, sections = normalize_sections(
-        str(raw.get("title", "")),
-        raw.get("slides", []),
+        final_title,
+        final_slides,
         fallback_title=fallback_title,
         target_count=target_count,
     )
@@ -843,9 +979,10 @@ def maybe_generate_with_llm(
             teaching_style=teaching_style,
         )
         sections = sections[:target_count] if target_count else sections
-        return title, sections, False, f"{provider}/{model} returned too few slides; fallback applied.", provider
+        return title, sections, False, f"{provider}/{model} pipeline returned too few slides; fallback applied.", provider
 
-    return title, sections, True, None, provider
+    warning = "; ".join(stage_warnings) if stage_warnings else None
+    return title, sections, True, warning, provider
 
 
 def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teaching_style: str = "balanced") -> list[dict[str, object]]:
@@ -954,6 +1091,9 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
         slide_title = title if i == 0 else f"{title}: Part {i + 1}"
         subtitle = "StatEdu auto-generated lesson"
         bullets = shared.copy()
+        definition = ""
+        context = ""
+        student_materials: list[str] = []
         activity = ""
         equation = ""
         notes = ""
@@ -967,6 +1107,9 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 "Motivation: where this appears in real statistical analysis.",
                 "Roadmap: concept -> formula -> simulation -> interpretation.",
             ]
+            definition = "Key terms and notation for this lesson."
+            context = "Why this topic matters in real statistical decisions."
+            student_materials = ["One-page glossary", "Roadmap checklist"]
             notes = "Open by asking students what decision this tool helps us make."
         elif layout == "concept":
             bullets = [
@@ -974,6 +1117,9 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 shared[1],
                 "Name one assumption and one consequence if it is violated.",
             ]
+            definition = "Core concept stated in plain language."
+            context = "Connect the concept to a realistic classroom scenario."
+            student_materials = ["Mini concept map", "Common misconception prompt"]
             notes = "Pause for a 30-second check-for-understanding before moving on."
         elif layout == "formula":
             slide_title = f"{title}: Core Formula"
@@ -981,6 +1127,9 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 "Define each symbol before using the formula.",
                 "Link the formula to a decision rule students can apply.",
             ]
+            definition = "Formula components and variable meanings."
+            context = "When this formula is appropriate and when it is not."
+            student_materials = ["Formula sheet", "Symbol legend"]
             equation = formula
             notes = "Have learners annotate the formula in pairs."
         elif layout == "simulation":
@@ -989,6 +1138,9 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 "Run a small simulation to observe sampling behavior.",
                 "Interpret output in plain language, not only numbers.",
             ]
+            definition = "Simulation approximates repeated sampling behavior."
+            context = "Use simulation to build intuition before formal inference."
+            student_materials = ["R starter code", "Parameter tweak challenge"]
             r_chunk = simulation_code
             notes = "Ask students to change one parameter (n or sd) and predict impact."
         elif layout == "example":
@@ -998,6 +1150,9 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 "Compute step-by-step and justify each step.",
                 "Interpret the result in domain language.",
             ]
+            definition = "Identify the target quantity and inputs."
+            context = "Translate a word problem into a statistical setup."
+            student_materials = ["Worked solution template", "Checkpoint questions"]
             notes = "Cold-call for interpretation, not only calculation."
         elif layout == "activity":
             slide_title = f"{title}: Classroom Activity"
@@ -1006,6 +1161,9 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 "Write one decision and one justification.",
                 "Compare with a neighboring group.",
             ]
+            definition = "Clarify the decision students must produce."
+            context = "Activity mirrors a practical analysis decision."
+            student_materials = ["Short worksheet", "Discussion rubric"]
             activity = "Mini-activity: solve one quick scenario and defend your conclusion."
             notes = "Debrief misconceptions explicitly after share-out."
         elif layout == "summary":
@@ -1015,6 +1173,9 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 "State one common misconception and its correction.",
                 "Exit ticket: apply the method to a new short prompt.",
             ]
+            definition = "Most important definition to remember."
+            context = "How this method connects to future topics."
+            student_materials = ["Exit ticket prompt", "Practice set link"]
             activity = "Exit ticket: write a one-sentence decision and confidence level."
             notes = "Collect 2-3 responses and use them to start next class."
 
@@ -1038,8 +1199,11 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
             {
                 "title": slide_title,
                 "subtitle": subtitle,
-                "bullets": bullets[:6],
+                "bullets": compose_student_bullets(definition, context, student_materials, bullets, max_items=6),
                 "layout": layout,
+                "definition": definition,
+                "context": context,
+                "studentMaterials": student_materials,
                 "example": example_text if layout == "example" else "",
                 "activity": activity,
                 "equation": equation,
@@ -1422,6 +1586,7 @@ def create_deck(
         "approvedSlideIndexes": approved_norm,
         "llmUsed": llm_used,
         "llmProvider": llm_provider,
+        "generationPipeline": ["template", "content", "review", "correction"] if llm_used else ["fallback"],
         "llmWarning": llm_warning,
         "renderUrl": None,
         "renderWarning": None,
