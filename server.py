@@ -601,7 +601,7 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
     aggregated: list[dict[str, str]] = []
     seen_urls: set[str] = set()
     warnings: list[str] = []
-    failures = 0
+    primary_failures = 0
 
     for query in queries:
         if len(aggregated) >= limit:
@@ -622,8 +622,8 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
                     break
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"duckduckgo: {exc}")
-            failures += 1
-            if failures >= 2 and not aggregated:
+            primary_failures += 1
+            if primary_failures >= 2 and not aggregated:
                 break
 
     if len(aggregated) < limit:
@@ -646,8 +646,8 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
                         break
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"wikipedia: {exc}")
-                failures += 1
-                if failures >= 4 and not aggregated:
+                primary_failures += 1
+                if primary_failures >= 4 and not aggregated:
                     break
 
     if VIDEO_RESEARCH_ENABLED and VIDEO_RESEARCH_MAX_RESULTS > 0:
@@ -680,9 +680,30 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"youtube: {exc}")
 
+    # Fallback: if strict relevance filtering produced nothing but primary providers
+    # were reachable, keep up to 2 broad Wikipedia results rather than returning
+    # empty research context.
+    if not aggregated and primary_failures == 0:
+        try:
+            broad_results = search_wikipedia(prompt, limit=min(2, limit))
+            for item in broad_results:
+                url = item.get("url", "")
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                aggregated.append(item)
+                if len(aggregated) >= limit:
+                    break
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"wikipedia_fallback: {exc}")
+            primary_failures += 1
+
     warning = None
-    if not aggregated and warnings:
-        warning = "Web research unavailable in this environment; continued with prompt/source only."
+    if not aggregated:
+        if primary_failures > 0:
+            warning = "Web research unavailable in this environment; continued with prompt/source only."
+        else:
+            warning = "No relevant web research results found; continued with prompt/source only."
     return aggregated[:limit], warning
 
 
