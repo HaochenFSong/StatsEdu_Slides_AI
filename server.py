@@ -987,6 +987,62 @@ def base_r_fallback_chunk(label: str) -> str:
     )
 
 
+def is_likely_complete_r_code(code: str) -> bool:
+    text = str(code or "").strip()
+    if not text:
+        return False
+
+    str_pat = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+
+    def balance_delta(line: str) -> int:
+        clean = str_pat.sub("", line)
+        return (
+            clean.count("(")
+            - clean.count(")")
+            + clean.count("{")
+            - clean.count("}")
+            + clean.count("[")
+            - clean.count("]")
+        )
+
+    def ends_in_open_expression(line: str) -> bool:
+        t = line.strip()
+        if not t or t.startswith("#"):
+            return False
+        open_tails = (
+            ",",
+            "+",
+            "-",
+            "*",
+            "/",
+            "^",
+            "=",
+            "<-",
+            "->",
+            "|>",
+            "%>%",
+            "::",
+            ":::",
+            "(",
+            "{",
+            "[",
+        )
+        return any(t.endswith(tok) for tok in open_tails)
+
+    balance = 0
+    for line in text.splitlines():
+        balance += balance_delta(line)
+    if balance != 0:
+        return False
+    last_non_empty = ""
+    for line in text.splitlines():
+        if line.strip():
+            last_non_empty = line
+    if not last_non_empty:
+        return False
+    return not ends_in_open_expression(last_non_empty)
+
+
 def sanitize_r_chunk(code: str, label: str) -> str:
     raw = str(code or "").strip()
     if not raw:
@@ -1002,6 +1058,8 @@ def sanitize_r_chunk(code: str, label: str) -> str:
     if not cleaned:
         return base_r_fallback_chunk(label)
     if has_non_base_r_dependencies(cleaned):
+        return base_r_fallback_chunk(label)
+    if not is_likely_complete_r_code(cleaned):
         return base_r_fallback_chunk(label)
     return cleaned
 
@@ -1362,11 +1420,83 @@ def split_code_into_chunks(code: str, max_lines: int) -> list[str]:
     lines = [line for line in lines if line.strip() or line == ""]
     if not lines:
         return []
+
+    # Strip quoted strings so bracket counting is less likely to be confused by
+    # punctuation inside text literals.
+    str_pat = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+
+    def balance_delta(line: str) -> int:
+        clean = str_pat.sub("", line)
+        return (
+            clean.count("(")
+            - clean.count(")")
+            + clean.count("{")
+            - clean.count("}")
+            + clean.count("[")
+            - clean.count("]")
+        )
+
+    def ends_in_open_expression(line: str) -> bool:
+        t = line.strip()
+        if not t:
+            return False
+        open_tails = (
+            ",",
+            "+",
+            "-",
+            "*",
+            "/",
+            "^",
+            "=",
+            "<-",
+            "->",
+            "|>",
+            "%>%",
+            "::",
+            ":::",
+            "(",
+            "{",
+            "[",
+        )
+        return any(t.endswith(tok) for tok in open_tails)
+
+    if len(lines) <= max_lines:
+        block = "\n".join(lines).strip()
+        return [block] if block else []
+
     chunks: list[str] = []
-    for start in range(0, len(lines), max_lines):
-        block = "\n".join(lines[start : start + max_lines]).strip()
-        if block:
-            chunks.append(block)
+    start = 0
+    total = len(lines)
+    while start < total:
+        if total - start <= max_lines:
+            tail = "\n".join(lines[start:]).strip()
+            if tail:
+                chunks.append(tail)
+            break
+
+        running_balance = 0
+        cut_at = -1
+        # Allow a small overflow window to find a safe boundary rather than
+        # forcing a split at exactly max_lines.
+        scan_limit = min(total, start + max_lines + 20)
+        for i in range(start, scan_limit):
+            running_balance += balance_delta(lines[i])
+            if i - start + 1 < max_lines:
+                continue
+            if running_balance == 0 and not ends_in_open_expression(lines[i]):
+                cut_at = i + 1
+                break
+
+        # If no safe boundary exists, keep the code intact to avoid invalid R.
+        if cut_at < 0:
+            full = "\n".join(lines).strip()
+            return [full] if full else []
+
+        part = "\n".join(lines[start:cut_at]).strip()
+        if part:
+            chunks.append(part)
+        start = cut_at
+
     return chunks
 
 
