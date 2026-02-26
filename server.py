@@ -276,6 +276,58 @@ def compose_student_bullets(
     return out
 
 
+def has_non_base_r_dependencies(code: str) -> bool:
+    low = str(code or "").lower()
+    patterns = [
+        "library(",
+        "require(",
+        "pacman::",
+        "ggplot(",
+        "geom_",
+        "theme_",
+        "%>%",
+        "dplyr::",
+        "tidyr::",
+        "readr::",
+        "forcats::",
+        "tibble(",
+        "read_csv(",
+    ]
+    return any(p in low for p in patterns)
+
+
+def base_r_fallback_chunk(label: str) -> str:
+    safe_label = re.sub(r"[^a-zA-Z0-9_ -]", "", str(label or "simulation")).strip() or "simulation"
+    return "\n".join(
+        [
+            "set.seed(1234)",
+            "x <- rnorm(300)",
+            f"hist(x, breaks = 24, col = 'lightblue', main = 'Base R Plot: {safe_label}', xlab = 'Value')",
+            "abline(v = mean(x), col = 'red', lwd = 2)",
+            "c(mean = mean(x), sd = sd(x))",
+        ]
+    )
+
+
+def sanitize_r_chunk(code: str, label: str) -> str:
+    raw = str(code or "").strip()
+    if not raw:
+        return base_r_fallback_chunk(label)
+
+    cleaned_lines: list[str] = []
+    for line in raw.splitlines():
+        striped = line.strip().lower()
+        if striped.startswith("library(") or striped.startswith("require(") or "pacman::p_load" in striped:
+            continue
+        cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines).strip()
+    if not cleaned:
+        return base_r_fallback_chunk(label)
+    if has_non_base_r_dependencies(cleaned):
+        return base_r_fallback_chunk(label)
+    return cleaned
+
+
 def extract_json_object(text: str) -> dict[str, object]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -912,7 +964,8 @@ def maybe_generate_with_llm(
         "Each slide object must include: title, subtitle, layout, bullets (2-6), "
         "definition (string), context (string), studentMaterials (array of 1-3 strings), "
         "example (optional), activity (optional), equation (optional), rChunk (optional). "
-        "Audience-facing slide copy only. No presenter coaching language."
+        "Audience-facing slide copy only. No presenter coaching language. "
+        "Use base R only in rChunk (no library()/require(), no tidyverse/ggplot dependencies)."
     )
     content_user = (
         f"Prompt:\n{prompt.strip()}\n\n"
@@ -1317,7 +1370,7 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
         lines.append("$$")
 
     def append_r_chunk(code: str, label: str) -> None:
-        body = str(code or "").strip()
+        body = sanitize_r_chunk(code, label)
         if not body:
             return
         lines.append(f"```{{r {label}, echo=TRUE}}")

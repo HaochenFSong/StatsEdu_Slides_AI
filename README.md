@@ -24,6 +24,7 @@ The app generates editable Quarto Reveal.js slides, renders live previews, suppo
 - Audience-facing slide language (no presenter coaching text in visible slide body)
 - Content structure emphasis per slide: definition, context, and student-useful materials
 - R-enabled simulation/plot slides (e.g., histogram, scatter, cluster plot) for concept illustration
+- Base-R-safe rendering path for generated `rChunk` code (auto-avoids missing tidyverse/ggplot dependencies)
 - In-app `.qmd` editing with re-render
 - Slide-level protection during refine (`approve` / `lock`)
 - Stage-aware progress tracking in workspace and cover page pipeline panel
