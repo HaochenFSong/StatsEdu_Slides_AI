@@ -1,0 +1,61 @@
+.reveal .accent-one {
+  color: #7FC97F !important; 
+}
+.reveal .accent-two { 
+  color: #BEAED4 !important; 
+}
+.reveal .accent-three { 
+  color: #FDC086 !important; 
+}
+.reveal .accent-four { 
+  color: #FFFF99 !important; 
+}
+.reveal .accent-five { 
+  color: #386CB0 !important; 
+}
+.reveal .white-text {
+  color: #ffffff !important;
+}
+.reveal .red-text {
+  color: red !important;
+}
+.reveal .black-text {
+  color: black !important;
+}
+.reveal .quarto-title-block .quarto-title-authors {
+  display: block;
+}
+
+.reveal .quarto-title-block .quarto-title-authors .quarto-title-author {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.reveal .slides section {
+  text-align: left;
+}
+
+.reveal .slides section h2 {
+  font-size: 1.44em;
+  line-height: 1.08;
+  margin-bottom: 0.24em;
+}
+
+.reveal .slides section p,
+.reveal .slides section li {
+  font-size: 0.84em;
+  line-height: 1.26;
+}
+
+.reveal .slides section ul {
+  margin-top: 0.32em;
+}
+
+.reveal .slides section blockquote {
+  font-size: 0.72em;
+  line-height: 1.24;
+  padding: 0.45em 0.7em;
+  border-left: 0.18em solid rgba(40, 62, 110, 0.35);
+  background: rgba(241, 246, 255, 0.78);
+  overflow-wrap: anywhere;
+}

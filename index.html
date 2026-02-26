@@ -1,0 +1,1947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StatEdu Slides Helper AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --ink: #11203b;
+      --muted: #5a6f92;
+      --surface: #ffffff;
+      --surface-soft: #eef3ff;
+      --line: #d5dff2;
+      --accent: #1e66ff;
+      --accent-strong: #0f4dd6;
+      --ok: #078a63;
+      --warn: #b45309;
+      --danger: #b42318;
+      --shadow: 0 14px 32px rgba(8, 26, 68, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Space Grotesk", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 15%, #e4ecff 0%, transparent 35%),
+        radial-gradient(circle at 90% 85%, #d8f4ef 0%, transparent 30%),
+        linear-gradient(150deg, #f7f9fe 0%, #eef3ff 100%);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .workspace-shell {
+      display: none;
+      flex: 1;
+      min-height: 0;
+      flex-direction: column;
+    }
+
+    .workspace-shell.show {
+      display: flex;
+    }
+
+    .cover-page {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      position: relative;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 12% 16%, rgba(255, 183, 77, 0.3), transparent 36%),
+        radial-gradient(circle at 80% 20%, rgba(68, 138, 255, 0.3), transparent 35%),
+        radial-gradient(circle at 76% 84%, rgba(32, 182, 150, 0.28), transparent 31%),
+        linear-gradient(140deg, #f8fbff 0%, #eef4ff 48%, #f6f9ff 100%);
+    }
+
+    .cover-bg-orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(0.5px);
+      opacity: 0.55;
+      pointer-events: none;
+      z-index: 0;
+      animation: floatOrb 11s ease-in-out infinite;
+    }
+
+    .cover-bg-orb.one {
+      width: 240px;
+      height: 240px;
+      left: -40px;
+      top: 22%;
+      background: radial-gradient(circle, rgba(255, 176, 76, 0.42), rgba(255, 176, 76, 0.03) 72%);
+    }
+
+    .cover-bg-orb.two {
+      width: 320px;
+      height: 320px;
+      right: -90px;
+      top: 10%;
+      background: radial-gradient(circle, rgba(62, 118, 255, 0.35), rgba(62, 118, 255, 0.02) 72%);
+      animation-delay: 1.2s;
+    }
+
+    .cover-bg-orb.three {
+      width: 260px;
+      height: 260px;
+      right: 6%;
+      bottom: -70px;
+      background: radial-gradient(circle, rgba(31, 176, 154, 0.36), rgba(31, 176, 154, 0.03) 72%);
+      animation-delay: 2s;
+    }
+
+    .cover-page.hidden {
+      display: none;
+    }
+
+    .cover-inner {
+      width: min(1200px, 100%);
+      border: 1px solid #d6e1f7;
+      border-radius: 28px;
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(8px);
+      box-shadow: 0 26px 56px rgba(19, 49, 102, 0.16);
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      position: relative;
+      z-index: 1;
+    }
+
+    .cover-left {
+      padding: 40px 40px 36px;
+      display: grid;
+      gap: 16px;
+      align-content: start;
+      background:
+        linear-gradient(165deg, rgba(255, 255, 255, 0.96), rgba(247, 251, 255, 0.98)),
+        radial-gradient(circle at 22% 22%, rgba(62, 119, 255, 0.16), transparent 45%);
+    }
+
+    .cover-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid #d2def7;
+      width: max-content;
+      background: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      color: #24457d;
+    }
+
+    .cover-kicker {
+      margin: 2px 0 0;
+      color: #2f62b0;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-size: 11px;
+    }
+
+    .cover-title {
+      margin: 0;
+      font-family: "Fraunces", serif;
+      font-size: clamp(36px, 5.2vw, 62px);
+      line-height: 0.98;
+      letter-spacing: -0.02em;
+      color: #12284f;
+      text-wrap: balance;
+    }
+
+    .cover-title .accent {
+      background: linear-gradient(135deg, #1d67ff 0%, #00a994 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .cover-copy {
+      margin: 0;
+      color: #38537f;
+      font-size: 17px;
+      line-height: 1.55;
+      max-width: 62ch;
+    }
+
+    .cover-cta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+
+    .tour-panel {
+      border: 1px solid #d2dff7;
+      border-radius: 14px;
+      background: linear-gradient(145deg, #ffffff, #f6faff);
+      padding: 10px 12px;
+      display: grid;
+      gap: 7px;
+      box-shadow: 0 10px 22px rgba(24, 57, 116, 0.08);
+    }
+
+    .tour-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 12px;
+      color: #2f4f87;
+    }
+
+    .tour-meta {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #5274a9;
+    }
+
+    .tour-title {
+      margin: 0;
+      font-size: 14px;
+      color: #123162;
+      font-weight: 700;
+    }
+
+    .tour-copy {
+      margin: 0;
+      color: #466286;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .tour-progress {
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      background: #dce6fb;
+      overflow: hidden;
+    }
+
+    .tour-progress-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2368ff, #19b89c);
+      transition: width 0.1s linear;
+    }
+
+    .cover-highlights {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .highlight {
+      border: 1px solid #d7e2f7;
+      border-radius: 12px;
+      background: #fbfdff;
+      padding: 10px;
+      display: grid;
+      gap: 3px;
+      transition: 0.25s ease;
+    }
+
+    .highlight.active-tour {
+      border-color: #4a80e2;
+      background: #f4f8ff;
+      box-shadow: 0 10px 22px rgba(31, 93, 188, 0.14);
+    }
+
+    .highlight strong {
+      font-size: 16px;
+      color: #163464;
+    }
+
+    .highlight span {
+      font-size: 12px;
+      color: #5572a3;
+    }
+
+    .cover-right {
+      border-left: 1px solid #d9e4fa;
+      background:
+        radial-gradient(circle at 88% 18%, rgba(44, 132, 255, 0.2), transparent 35%),
+        linear-gradient(180deg, #f6faff 0%, #edf4ff 100%);
+      padding: 24px;
+      display: grid;
+      gap: 12px;
+      align-content: center;
+    }
+
+    .story-card {
+      border: 1px solid #d6e3fb;
+      border-radius: 16px;
+      background: #fff;
+      padding: 14px 15px;
+      box-shadow: 0 10px 28px rgba(23, 53, 110, 0.09);
+      animation: riseIn 0.45s ease;
+      transition: 0.25s ease;
+    }
+
+    .story-card.active-tour {
+      border-color: #4a80e2;
+      box-shadow: 0 14px 32px rgba(30, 91, 199, 0.18);
+      transform: translateY(-2px);
+    }
+
+    .story-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 7px;
+    }
+
+    .story-tag {
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #3a6bc0;
+      background: #edf4ff;
+      border: 1px solid #d3e0f7;
+      border-radius: 999px;
+      padding: 4px 8px;
+    }
+
+    .story-title {
+      margin: 0;
+      font-size: 14px;
+      color: #1d3a68;
+      font-weight: 700;
+    }
+
+    .story-list {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: #36537f;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(6px);
+      position: sticky;
+      top: 0;
+      z-index: 30;
+    }
+
+    .brand {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+
+    .brand-badge {
+      width: 34px;
+      height: 34px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(140deg, #1e66ff, #20b7a0);
+      color: #fff;
+      box-shadow: 0 6px 20px rgba(30, 102, 255, 0.3);
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .view-modes {
+      display: flex;
+      gap: 6px;
+      padding: 4px;
+      border: 1px solid #d4dff5;
+      border-radius: 10px;
+      background: #f4f8ff;
+    }
+
+    .mode-btn {
+      border: 0;
+      background: transparent;
+      color: #294b83;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      border-radius: 8px;
+      padding: 7px 10px;
+      cursor: pointer;
+    }
+
+    .mode-btn.active {
+      background: #1f5dff;
+      color: #fff;
+    }
+
+    .btn {
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.2s ease;
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: #fff;
+      border-color: var(--line);
+      color: var(--ink);
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      border-color: #b5c4e8;
+      background: #f6f9ff;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-strong);
+    }
+
+    .app {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 390px 1fr;
+      gap: 16px;
+      padding: 16px;
+      min-height: 0;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      min-height: 0;
+    }
+
+    .left {
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      overflow: hidden;
+    }
+
+    .block {
+      padding: 14px 14px 10px;
+      border-bottom: 1px solid #e7ecf8;
+    }
+
+    .block h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .toggles {
+      display: grid;
+      gap: 8px;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      border: 1px solid #c9d5f0;
+      background: #f7faff;
+      color: #20345c;
+      padding: 8px 10px;
+      font-size: 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      user-select: none;
+      transition: 0.2s ease;
+    }
+
+    .chip.active {
+      border-color: transparent;
+      color: #fff;
+      background: linear-gradient(145deg, #1e66ff, #2682ff);
+      box-shadow: 0 6px 14px rgba(30, 102, 255, 0.28);
+    }
+
+    .chat {
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: linear-gradient(180deg, #fbfdff 0%, #f4f8ff 100%);
+    }
+
+    .bubble {
+      max-width: 90%;
+      padding: 10px 12px;
+      font-size: 14px;
+      line-height: 1.4;
+      border-radius: 14px;
+      white-space: pre-wrap;
+    }
+
+    .bubble.ai {
+      align-self: flex-start;
+      background: #edf2fc;
+      border: 1px solid #dae4fa;
+      border-bottom-left-radius: 4px;
+    }
+
+    .bubble.user {
+      align-self: flex-end;
+      color: #fff;
+      background: linear-gradient(140deg, #1f5dff 0%, #0c4ce0 100%);
+      border-bottom-right-radius: 4px;
+    }
+
+    .composer {
+      padding: 12px;
+      background: #fff;
+      display: grid;
+      gap: 8px;
+    }
+
+    .attachment {
+      border: 1px solid #cbd8f5;
+      border-radius: 10px;
+      padding: 7px 10px;
+      display: none;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      background: #f1f6ff;
+      font-size: 13px;
+      color: #244179;
+    }
+
+    .attachment.show {
+      display: flex;
+    }
+
+    .mono {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 12px;
+    }
+
+    .mini-input {
+      width: 84px;
+      border: 1px solid #c9d6f0;
+      border-radius: 9px;
+      padding: 7px 9px;
+      font: inherit;
+      font-size: 12px;
+      color: #233f71;
+      background: #fff;
+    }
+
+    .composer-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    textarea {
+      resize: none;
+      font: inherit;
+      border: 1px solid #cad5ee;
+      border-radius: 10px;
+      padding: 10px 12px;
+      min-height: 42px;
+      max-height: 108px;
+      outline: none;
+      background: #fdfefe;
+    }
+
+    textarea:focus {
+      border-color: #8cb0ff;
+      box-shadow: 0 0 0 3px rgba(30, 102, 255, 0.12);
+    }
+
+    .icon-btn {
+      border: 1px solid #c8d4ef;
+      background: #fff;
+      color: #27457c;
+      border-radius: 10px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .right {
+      display: grid;
+      grid-template-rows: auto auto auto auto 1fr auto;
+      min-height: 0;
+    }
+
+    .canvas-header {
+      padding: 14px;
+      border-bottom: 1px solid #e7ecf8;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .status.idle { background: #edf2fc; color: #4265a8; }
+    .status.building { background: #fff5e8; color: var(--warn); }
+    .status.synced { background: #e8f8f2; color: var(--ok); }
+
+    .feedback {
+      padding: 12px 14px;
+      border-bottom: 1px solid #e7ecf8;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      background: #fbfdff;
+    }
+
+    .feedback input {
+      border: 1px solid #cbd8f5;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+    }
+
+    .render-progress {
+      border-bottom: 1px solid #e7ecf8;
+      background: #f8fbff;
+      padding: 10px 14px;
+      display: none;
+      gap: 8px;
+      flex-direction: column;
+    }
+
+    .render-progress.show {
+      display: flex;
+    }
+
+    .progress-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #3a5585;
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      background: #dce7fb;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2e79ff, #17b89c);
+      transition: width 0.2s ease;
+    }
+
+    .slide-controls {
+      border-bottom: 1px solid #e7ecf8;
+      background: #f7faff;
+      padding: 10px 14px;
+      display: none;
+      gap: 8px;
+      flex-direction: column;
+    }
+
+    .slide-controls.show {
+      display: flex;
+    }
+
+    .slide-controls-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      color: #38527f;
+    }
+
+    .slide-list {
+      display: grid;
+      gap: 6px;
+      max-height: 200px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .slide-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 6px;
+      align-items: center;
+      border: 1px solid #d7e3f8;
+      background: #fff;
+      border-radius: 10px;
+      padding: 7px 8px;
+      font-size: 12px;
+      color: #234271;
+      cursor: pointer;
+    }
+
+    .slide-row-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .slide-row-main {
+      min-width: 0;
+    }
+
+    .slide-row-subtitle {
+      font-size: 11px;
+      color: #5775a8;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mini-btn {
+      border: 1px solid #c8d5f0;
+      background: #fff;
+      color: #29467a;
+      border-radius: 999px;
+      font: inherit;
+      font-size: 11px;
+      padding: 5px 8px;
+      cursor: pointer;
+    }
+
+    .mini-btn.active-approve {
+      border-color: transparent;
+      background: #0d996f;
+      color: #fff;
+    }
+
+    .mini-btn.active-lock {
+      border-color: transparent;
+      background: #1f5dff;
+      color: #fff;
+    }
+
+    .preview {
+      min-height: 0;
+      position: relative;
+      padding: 10px 12px;
+      overflow: auto;
+      background:
+        linear-gradient(180deg, rgba(233, 242, 255, 0.8), rgba(241, 247, 255, 0.8)),
+        repeating-linear-gradient(
+          -40deg,
+          rgba(255, 255, 255, 0.8) 0px,
+          rgba(255, 255, 255, 0.8) 10px,
+          rgba(237, 243, 255, 0.8) 10px,
+          rgba(237, 243, 255, 0.8) 20px
+        );
+    }
+
+    .deck-frame {
+      width: 100%;
+      height: clamp(640px, 75vh, 920px);
+      min-height: 640px;
+      border: 1px solid #cfdbf5;
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 12px 28px rgba(28, 61, 128, 0.12);
+    }
+
+    .render-note {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #47608a;
+    }
+
+    .qmd-editor {
+      border-top: 1px solid #e7ecf8;
+      background: #f8fbff;
+      display: none;
+      grid-template-rows: auto 1fr;
+      min-height: 220px;
+      max-height: 34vh;
+    }
+
+    .qmd-editor.show {
+      display: grid;
+    }
+
+    .qmd-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid #e1e9fa;
+      font-size: 12px;
+      color: #39537f;
+      background: #f2f7ff;
+    }
+
+    .qmd-toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .qmd-input {
+      width: 100%;
+      height: 100%;
+      min-height: 150px;
+      border: 0;
+      border-radius: 0;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      padding: 10px 12px;
+      background: #fcfeff;
+      outline: none;
+      resize: none;
+    }
+
+    .app.mode-full {
+      grid-template-columns: 1fr;
+    }
+
+    .app.mode-full .left,
+    .app.mode-full .canvas-header,
+    .app.mode-full .feedback,
+    .app.mode-full .render-progress,
+    .app.mode-full .slide-controls,
+    .app.mode-full .preview {
+      display: none !important;
+    }
+
+    .app.mode-full .right {
+      grid-template-rows: 1fr;
+    }
+
+    .app.mode-full .qmd-editor {
+      display: grid !important;
+      min-height: 0;
+      max-height: none;
+    }
+
+    .slide {
+      max-width: 920px;
+      min-height: 420px;
+      margin: 0 auto;
+      padding: 28px;
+      border-radius: 16px;
+      background: #ffffff;
+      border: 1px solid #dbe5f9;
+      box-shadow: 0 18px 40px rgba(20, 46, 96, 0.12);
+      position: relative;
+      overflow: hidden;
+      animation: riseIn 0.45s ease;
+    }
+
+    .slide::after {
+      content: "";
+      position: absolute;
+      right: -120px;
+      top: -120px;
+      width: 260px;
+      height: 260px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(37, 117, 252, 0.2), transparent 70%);
+      pointer-events: none;
+    }
+
+    .slide h2 {
+      margin: 0 0 10px;
+      font-size: 30px;
+      line-height: 1.1;
+      color: #142647;
+    }
+
+    .slide p {
+      margin: 0;
+      color: #47608a;
+      line-height: 1.55;
+      max-width: 75ch;
+    }
+
+    .slide ul {
+      margin: 16px 0 0;
+      padding-left: 18px;
+      color: #1d3663;
+    }
+
+    .slide ul li {
+      margin: 8px 0;
+      opacity: 0;
+      transform: translateY(6px);
+      animation: reveal 0.5s ease forwards;
+    }
+
+    .slide ul li:nth-child(1) { animation-delay: 0.08s; }
+    .slide ul li:nth-child(2) { animation-delay: 0.18s; }
+    .slide ul li:nth-child(3) { animation-delay: 0.28s; }
+    .slide ul li:nth-child(4) { animation-delay: 0.38s; }
+
+    .qmd {
+      margin-top: 16px;
+      border: 1px solid #d7e2f7;
+      background: #f8fbff;
+      border-radius: 12px;
+      padding: 12px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 12px;
+      color: #1a355f;
+      white-space: pre-wrap;
+    }
+
+    .empty {
+      height: 100%;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      color: #4c648d;
+      padding: 24px;
+    }
+
+    .empty h4 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      color: #1c3668;
+    }
+
+    @keyframes reveal {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes riseIn {
+      from {
+        transform: translateY(10px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    @keyframes floatOrb {
+      0% {
+        transform: translate3d(0, 0, 0) scale(1);
+      }
+      50% {
+        transform: translate3d(0, -14px, 0) scale(1.05);
+      }
+      100% {
+        transform: translate3d(0, 0, 0) scale(1);
+      }
+    }
+
+    @media (max-width: 1050px) {
+      .cover-inner {
+        grid-template-columns: 1fr;
+      }
+
+      .cover-right {
+        border-left: 0;
+        border-top: 1px solid #d9e4fa;
+      }
+
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .deck-frame {
+        height: clamp(460px, 62vh, 760px);
+        min-height: 460px;
+      }
+
+      .left {
+        max-height: 56vh;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .cover-page {
+        padding: 14px;
+      }
+
+      .cover-left {
+        padding: 24px 18px;
+      }
+
+      .cover-right {
+        padding: 14px;
+      }
+
+      .cover-highlights {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <section id="cover-page" class="cover-page">
+    <div class="cover-bg-orb one"></div>
+    <div class="cover-bg-orb two"></div>
+    <div class="cover-bg-orb three"></div>
+    <div class="cover-inner">
+      <div class="cover-left">
+        <div class="cover-brand">
+          <span class="brand-badge" style="width:28px;height:28px;">SE</span>
+          StatEdu Slides Helper AI
+        </div>
+        <p class="cover-kicker">Upload -> Generate -> Refine -> Teach</p>
+        <h1 class="cover-title">Turn <span class="accent">Textbooks, Notes, and Old Slides</span> into Editable Quarto Decks</h1>
+        <p class="cover-copy">
+          Build classroom-ready statistical education slides with AI, then keep humans in the loop.
+          Prompt, review, lock critical slides, edit raw <code>.qmd</code>, and watch live preview sync while rendering.
+        </p>
+        <div class="cover-cta">
+          <button id="enter-app-btn" class="btn btn-primary" type="button">Start Building Slides</button>
+          <button id="enter-demo-btn" class="btn btn-secondary" type="button">Try Demo Lesson</button>
+          <button id="tour-replay-btn" class="btn btn-secondary" type="button">Play 8s Tour</button>
+        </div>
+        <div class="tour-panel">
+          <div class="tour-head">
+            <span class="tour-meta">8s Product Tour</span>
+            <span id="tour-step-indicator" class="tour-meta">Step 1/4</span>
+          </div>
+          <h3 id="tour-title" class="tour-title">Upload your source materials</h3>
+          <p id="tour-copy" class="tour-copy">Attach textbook pages, existing slides, or notes to seed your lesson deck.</p>
+          <div class="tour-progress">
+            <div id="tour-progress-fill" class="tour-progress-fill"></div>
+          </div>
+        </div>
+        <div class="cover-highlights">
+          <div class="highlight" data-tour-highlight="0">
+            <strong>HITL Feedback</strong>
+            <span>Approve or lock slides before regenerating.</span>
+          </div>
+          <div class="highlight" data-tour-highlight="1">
+            <strong>Live Render</strong>
+            <span>Track slide-by-slide progress with synced preview.</span>
+          </div>
+          <div class="highlight" data-tour-highlight="2">
+            <strong>Editable QMD</strong>
+            <span>Switch between Slides, Split, or Full QMD mode.</span>
+          </div>
+        </div>
+      </div>
+      <div class="cover-right">
+        <article class="story-card" data-tour-card="0">
+          <div class="story-head">
+            <span class="story-tag">1. Source</span>
+            <h3 class="story-title">Upload Content</h3>
+          </div>
+          <ul class="story-list">
+            <li>Textbook chapters or old presentations</li>
+            <li>Prompt your learning goals and audience level</li>
+          </ul>
+        </article>
+        <article class="story-card" data-tour-card="1">
+          <div class="story-head">
+            <span class="story-tag">2. Draft</span>
+            <h3 class="story-title">Generate Structured Slides</h3>
+          </div>
+          <ul class="story-list">
+            <li>Quarto Reveal.js deck with animations</li>
+            <li>Long-form deck sizes (up to 40 slides)</li>
+          </ul>
+        </article>
+        <article class="story-card" data-tour-card="2">
+          <div class="story-head">
+            <span class="story-tag">3. Refine</span>
+            <h3 class="story-title">Edit + Re-render Fast</h3>
+          </div>
+          <ul class="story-list">
+            <li>Live QMD editing and synced preview</li>
+            <li>Progress bar with current slide render stage</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <div id="workspace-shell" class="workspace-shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-badge">SE</div>
+        <div>
+          <div>StatEdu Slides Helper AI</div>
+        <div class="mono" style="color:#5572a2;">prompt -> .qmd -> render -> refine</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <div class="view-modes">
+        <button id="mode-hide-btn" class="mode-btn active" type="button">Slides</button>
+        <button id="mode-split-btn" class="mode-btn" type="button" disabled>Split</button>
+        <button id="mode-full-btn" class="mode-btn" type="button" disabled>QMD Full</button>
+      </div>
+      <button id="export-btn" class="btn btn-secondary" disabled>Export to Google Slides</button>
+      <button id="download-qmd-btn" class="btn btn-primary" disabled>Download .qmd</button>
+    </div>
+  </header>
+
+  <main id="app-shell" class="app">
+    <aside class="panel left">
+      <section class="block">
+        <h3>Output Format</h3>
+        <div class="toggles" id="format-toggle">
+          <div class="row">
+            <button class="chip active" data-value="quarto">Quarto (Reveal.js)</button>
+            <button class="chip" data-value="gslides">Google Slides</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="block">
+        <h3>Animation Style</h3>
+        <div class="row" id="anim-toggle">
+          <button class="chip active" data-value="step">Step-by-step bullets</button>
+          <button class="chip" data-value="fade">Fade-in text</button>
+          <button class="chip" data-value="none">No animation</button>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <label for="slide-count-input" class="mono" style="color:#4f6894;">Target Slides</label>
+          <input id="slide-count-input" class="mini-input" type="number" min="3" max="40" step="1" value="8" />
+        </div>
+      </section>
+
+      <section class="block">
+        <h3>Teaching Style Profile</h3>
+        <div class="row" id="style-toggle">
+          <button class="chip active" data-value="balanced">Balanced</button>
+          <button class="chip" data-value="conceptual">Conceptual</button>
+          <button class="chip" data-value="mathematical">Mathematical</button>
+          <button class="chip" data-value="simulation">Simulation-heavy</button>
+        </div>
+      </section>
+
+      <section id="chat-history" class="chat">
+        <div class="bubble ai">Start by attaching a textbook/old slides if you have them. Then describe the lesson outcome, audience level, and slide count.</div>
+      </section>
+
+      <section class="composer">
+        <div id="attachment-pill" class="attachment" role="status">
+          <span id="attachment-label" class="mono">Attached: none</span>
+          <button id="remove-file-btn" class="icon-btn" type="button">Remove</button>
+        </div>
+
+        <div class="composer-row">
+          <input id="file-input" type="file" hidden accept=".pdf,.ppt,.pptx,.doc,.docx,.txt,.md,.csv,.png,.jpg,.jpeg" />
+          <button id="upload-btn" class="icon-btn" type="button">Attach file</button>
+          <textarea id="prompt-input" placeholder="Example: Create 8 intro-statistics slides on Normal Distribution, include one worked example and in-class question."></textarea>
+          <button id="send-btn" class="btn btn-primary" type="button">Generate</button>
+        </div>
+      </section>
+    </aside>
+
+    <section class="panel right">
+      <div class="canvas-header">
+        <strong>Live Preview Canvas</strong>
+        <span id="status-pill" class="status idle"><span class="dot"></span>Idle</span>
+      </div>
+
+      <div class="feedback">
+        <input id="feedback-input" type="text" placeholder="Human-in-the-loop feedback: 'Make slide 3 simpler and animate the formula step-by-step.'" />
+        <button id="apply-feedback-btn" class="btn btn-secondary" disabled>Apply update</button>
+      </div>
+
+      <div id="render-progress" class="render-progress">
+        <div class="progress-top">
+          <span id="progress-stage">Preparing generation...</span>
+          <span id="progress-counter">0 / 0</span>
+        </div>
+        <div class="progress-track">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+      </div>
+
+      <div id="slide-controls" class="slide-controls">
+        <div class="slide-controls-head">
+          <span>Slide Controls: approved/locked slides are protected during refine.</span>
+          <button id="clear-slide-flags-btn" class="mini-btn" type="button" disabled>Clear flags</button>
+        </div>
+        <div id="slide-list" class="slide-list"></div>
+      </div>
+
+      <div id="preview" class="preview">
+        <div class="empty">
+          <div>
+            <h4>No deck yet</h4>
+            <p>Attach source material and send a prompt to generate a first draft. Preview updates here on each feedback cycle.</p>
+          </div>
+        </div>
+      </div>
+
+      <div id="qmd-editor" class="qmd-editor">
+        <div class="qmd-toolbar">
+          <div class="qmd-toolbar-group">
+            <strong>.qmd Editor</strong>
+            <label><input id="live-qmd-toggle" type="checkbox" checked /> Live preview</label>
+          </div>
+          <button id="save-qmd-btn" class="mini-btn" type="button" disabled>Save + Render</button>
+        </div>
+        <textarea id="qmd-input" class="qmd-input" spellcheck="false" placeholder="Generated .qmd will appear here..."></textarea>
+      </div>
+    </section>
+  </main>
+  </div>
+
+  <script>
+    const coverPage = document.getElementById('cover-page');
+    const workspaceShell = document.getElementById('workspace-shell');
+    const enterAppBtn = document.getElementById('enter-app-btn');
+    const enterDemoBtn = document.getElementById('enter-demo-btn');
+    const tourReplayBtn = document.getElementById('tour-replay-btn');
+    const tourTitle = document.getElementById('tour-title');
+    const tourCopy = document.getElementById('tour-copy');
+    const tourProgressFill = document.getElementById('tour-progress-fill');
+    const tourStepIndicator = document.getElementById('tour-step-indicator');
+    const tourCards = Array.from(document.querySelectorAll('[data-tour-card]'));
+    const tourHighlights = Array.from(document.querySelectorAll('[data-tour-highlight]'));
+    const appShell = document.getElementById('app-shell');
+    const chatHistory = document.getElementById('chat-history');
+    const promptInput = document.getElementById('prompt-input');
+    const slideCountInput = document.getElementById('slide-count-input');
+    const sendBtn = document.getElementById('send-btn');
+    const uploadBtn = document.getElementById('upload-btn');
+    const fileInput = document.getElementById('file-input');
+    const attachmentPill = document.getElementById('attachment-pill');
+    const attachmentLabel = document.getElementById('attachment-label');
+    const removeFileBtn = document.getElementById('remove-file-btn');
+    const preview = document.getElementById('preview');
+    const statusPill = document.getElementById('status-pill');
+    const feedbackInput = document.getElementById('feedback-input');
+    const applyFeedbackBtn = document.getElementById('apply-feedback-btn');
+    const modeHideBtn = document.getElementById('mode-hide-btn');
+    const modeSplitBtn = document.getElementById('mode-split-btn');
+    const modeFullBtn = document.getElementById('mode-full-btn');
+    const renderProgress = document.getElementById('render-progress');
+    const progressStage = document.getElementById('progress-stage');
+    const progressCounter = document.getElementById('progress-counter');
+    const progressFill = document.getElementById('progress-fill');
+    const slideControls = document.getElementById('slide-controls');
+    const slideList = document.getElementById('slide-list');
+    const clearSlideFlagsBtn = document.getElementById('clear-slide-flags-btn');
+    const qmdEditor = document.getElementById('qmd-editor');
+    const qmdInput = document.getElementById('qmd-input');
+    const saveQmdBtn = document.getElementById('save-qmd-btn');
+    const liveQmdToggle = document.getElementById('live-qmd-toggle');
+    const downloadQmdBtn = document.getElementById('download-qmd-btn');
+    const exportBtn = document.getElementById('export-btn');
+
+    const API_BASE = `${window.location.origin}/api`;
+    let attachedFile = null;
+    let selectedFormat = 'quarto';
+    let selectedAnimation = 'step';
+    let selectedTeachingStyle = 'balanced';
+    let currentDeck = null;
+    let qmdLiveTimer = null;
+    let qmdViewMode = 'hide';
+    let coverTourTimer = null;
+    let coverTourStartAt = 0;
+    let coverTourActiveIndex = -1;
+
+    const COVER_TOUR_STEPS = [
+      {
+        title: 'Upload your source materials',
+        copy: 'Attach textbook pages, existing slides, or notes to seed your lesson deck.',
+        cardIndex: 0,
+        highlightIndex: 0
+      },
+      {
+        title: 'Generate a long structured draft',
+        copy: 'Choose slide count and let AI build concept, example, activity, and summary flow.',
+        cardIndex: 1,
+        highlightIndex: 1
+      },
+      {
+        title: 'Refine with human-in-the-loop control',
+        copy: 'Lock and approve critical slides so updates only modify the right parts.',
+        cardIndex: 2,
+        highlightIndex: 0
+      },
+      {
+        title: 'Edit raw .qmd with live preview',
+        copy: 'Switch to Split or Full QMD mode and tweak markdown while render stays synced.',
+        cardIndex: 2,
+        highlightIndex: 2
+      }
+    ];
+
+    function enterWorkspace(useDemo = false) {
+      stopCoverTour();
+      coverPage.classList.add('hidden');
+      workspaceShell.classList.add('show');
+      if (useDemo) {
+        promptInput.value = 'Create 12 slides for Intro Statistics: Normal Distribution, worked example, misconception check, and exit ticket.';
+        slideCountInput.value = '12';
+      }
+      promptInput.focus();
+    }
+
+    function applyCoverTourStep(stepIdx) {
+      if (stepIdx === coverTourActiveIndex) return;
+      coverTourActiveIndex = stepIdx;
+      const step = COVER_TOUR_STEPS[stepIdx] || COVER_TOUR_STEPS[0];
+      tourTitle.textContent = step.title;
+      tourCopy.textContent = step.copy;
+      tourStepIndicator.textContent = `Step ${stepIdx + 1}/${COVER_TOUR_STEPS.length}`;
+
+      tourCards.forEach((card, idx) => {
+        card.classList.toggle('active-tour', idx === step.cardIndex);
+      });
+      tourHighlights.forEach((card, idx) => {
+        card.classList.toggle('active-tour', idx === step.highlightIndex);
+      });
+    }
+
+    function stopCoverTour() {
+      if (coverTourTimer) {
+        clearInterval(coverTourTimer);
+        coverTourTimer = null;
+      }
+      tourReplayBtn.disabled = false;
+      tourReplayBtn.textContent = 'Replay 8s Tour';
+    }
+
+    function startCoverTour() {
+      stopCoverTour();
+      const totalMs = 8000;
+      const stepMs = totalMs / COVER_TOUR_STEPS.length;
+      coverTourStartAt = Date.now();
+      coverTourActiveIndex = -1;
+      tourReplayBtn.disabled = true;
+      tourReplayBtn.textContent = 'Tour Running...';
+      tourProgressFill.style.width = '0%';
+      applyCoverTourStep(0);
+
+      coverTourTimer = setInterval(() => {
+        const elapsed = Date.now() - coverTourStartAt;
+        const progress = Math.min(1, elapsed / totalMs);
+        const stepIdx = Math.min(COVER_TOUR_STEPS.length - 1, Math.floor(elapsed / stepMs));
+        tourProgressFill.style.width = `${Math.round(progress * 100)}%`;
+        applyCoverTourStep(stepIdx);
+        if (progress >= 1) {
+          stopCoverTour();
+        }
+      }, 100);
+    }
+
+    function addMessage(text, role) {
+      const div = document.createElement('div');
+      div.className = `bubble ${role}`;
+      div.textContent = text;
+      chatHistory.appendChild(div);
+      chatHistory.scrollTop = chatHistory.scrollHeight;
+    }
+
+    function setStatus(state, label) {
+      statusPill.className = `status ${state}`;
+      statusPill.innerHTML = '<span class="dot"></span>' + label;
+    }
+
+    function setBusy(isBusy) {
+      sendBtn.disabled = isBusy;
+      applyFeedbackBtn.disabled = isBusy || !currentDeck;
+      exportBtn.disabled = isBusy || !currentDeck;
+      downloadQmdBtn.disabled = isBusy || !currentDeck;
+      clearSlideFlagsBtn.disabled = isBusy || !currentDeck;
+      saveQmdBtn.disabled = isBusy || !currentDeck;
+      qmdInput.disabled = isBusy || !currentDeck;
+      modeHideBtn.disabled = isBusy;
+      modeSplitBtn.disabled = isBusy || !currentDeck;
+      modeFullBtn.disabled = isBusy || !currentDeck;
+    }
+
+    function setQmdViewMode(mode) {
+      qmdViewMode = mode;
+      modeHideBtn.classList.toggle('active', mode === 'hide');
+      modeSplitBtn.classList.toggle('active', mode === 'split');
+      modeFullBtn.classList.toggle('active', mode === 'full');
+
+      appShell.classList.toggle('mode-full', mode === 'full');
+      qmdEditor.classList.toggle('show', mode !== 'hide');
+      if (mode !== 'hide' && currentDeck?.qmd && qmdInput.value.trim() === '') {
+        qmdInput.value = currentDeck.qmd;
+      }
+    }
+
+    function syncQmdFromDeck(deck) {
+      if (!deck) return;
+      const next = deck.qmd || '';
+      if (document.activeElement !== qmdInput) {
+        qmdInput.value = next;
+      }
+      modeSplitBtn.disabled = false;
+      modeFullBtn.disabled = false;
+    }
+
+    function setProgressVisible(show) {
+      renderProgress.classList.toggle('show', Boolean(show));
+      if (!show) {
+        progressFill.style.width = '0%';
+        progressCounter.textContent = '0 / 0';
+        progressStage.textContent = 'Preparing generation...';
+      }
+    }
+
+    function updateProgress(job) {
+      const total = Number(job?.totalSlides || 0);
+      const current = Number(job?.currentSlide || 0);
+      const progress = Math.max(0, Math.min(1, Number(job?.progress || 0)));
+      const stageRaw = String(job?.stage || 'working');
+      const stage = stageRaw.replaceAll('_', ' ');
+      progressFill.style.width = `${Math.round(progress * 100)}%`;
+      progressCounter.textContent = `${current} / ${total}`;
+      progressStage.textContent = stage.charAt(0).toUpperCase() + stage.slice(1);
+    }
+
+    function normalizeIndexes(raw, maxLen) {
+      if (!Array.isArray(raw)) return [];
+      const out = [];
+      for (const item of raw) {
+        const idx = Number(item);
+        if (Number.isInteger(idx) && idx >= 0 && idx < maxLen) out.push(idx);
+      }
+      return [...new Set(out)].sort((a, b) => a - b);
+    }
+
+    function ensureSlideFlags(deck) {
+      const slideCount = Array.isArray(deck?.slides) ? deck.slides.length : 0;
+      if (!deck) return;
+      deck.lockedSlideIndexes = normalizeIndexes(deck.lockedSlideIndexes || [], slideCount);
+      deck.approvedSlideIndexes = normalizeIndexes(deck.approvedSlideIndexes || [], slideCount);
+    }
+
+    function renderSlideControls(deck) {
+      if (!deck || !Array.isArray(deck.slides) || deck.slides.length === 0) {
+        slideControls.classList.remove('show');
+        slideList.innerHTML = '';
+        return;
+      }
+
+      ensureSlideFlags(deck);
+      const lockedSet = new Set(deck.lockedSlideIndexes);
+      const approvedSet = new Set(deck.approvedSlideIndexes);
+
+      slideList.innerHTML = deck.slides.map((slide, idx) => {
+        const title = slide?.title || `Slide ${idx + 1}`;
+        const subtitle = slide?.subtitle || '';
+        const approvedClass = approvedSet.has(idx) ? 'mini-btn active-approve' : 'mini-btn';
+        const lockClass = lockedSet.has(idx) ? 'mini-btn active-lock' : 'mini-btn';
+        return `
+          <div class="slide-row" data-action="goto" data-idx="${idx}">
+            <div class="slide-row-main">
+              <div class="slide-row-title">${idx + 1}. ${escapeHtml(title)}</div>
+              <div class="slide-row-subtitle">${escapeHtml(subtitle)}</div>
+            </div>
+            <button class="${approvedClass}" type="button" data-action="approve" data-idx="${idx}">
+              ${approvedSet.has(idx) ? 'Approved' : 'Approve'}
+            </button>
+            <button class="${lockClass}" type="button" data-action="lock" data-idx="${idx}">
+              ${lockedSet.has(idx) ? 'Locked' : 'Lock'}
+            </button>
+          </div>
+        `;
+      }).join('');
+
+      slideControls.classList.add('show');
+      slideList.querySelectorAll('[data-action]').forEach((node) => {
+        node.addEventListener('click', (event) => {
+          const action = node.dataset.action;
+          if (action === 'goto') {
+            if (event.target instanceof HTMLElement && event.target.closest('button')) return;
+            const idx = Number(node.dataset.idx);
+            goToDeckSlide(idx);
+            return;
+          }
+          if (!currentDeck) return;
+          const idx = Number(node.dataset.idx);
+          if (!Number.isInteger(idx)) return;
+          if (action !== 'lock' && action !== 'approve') return;
+          const targetKey = action === 'lock' ? 'lockedSlideIndexes' : 'approvedSlideIndexes';
+          const values = new Set(currentDeck[targetKey] || []);
+          if (values.has(idx)) values.delete(idx);
+          else values.add(idx);
+          currentDeck[targetKey] = [...values].sort((a, b) => a - b);
+          renderSlideControls(currentDeck);
+        });
+      });
+    }
+
+    function goToDeckSlide(idx) {
+      if (!currentDeck || !Number.isInteger(idx) || idx < 0) return;
+      const frame = document.getElementById('deck-preview-frame');
+      if (!frame || !(frame instanceof HTMLIFrameElement)) return;
+      const url = new URL(frame.src, window.location.origin);
+      url.hash = `/${idx}`;
+      frame.src = url.toString();
+    }
+
+    function setAttachment(file) {
+      if (!file) {
+        attachedFile = null;
+        fileInput.value = '';
+        attachmentPill.classList.remove('show');
+        attachmentLabel.textContent = 'Attached: none';
+        return;
+      }
+      attachedFile = file;
+      attachmentLabel.textContent = `Attached: ${file.name}`;
+      attachmentPill.classList.add('show');
+    }
+
+    function syncTeachingStyleToggle(style) {
+      const raw = String(style || 'balanced').toLowerCase();
+      const allowed = ['balanced', 'conceptual', 'mathematical', 'simulation'];
+      const normalized = allowed.includes(raw) ? raw : 'balanced';
+      selectedTeachingStyle = normalized;
+      document.querySelectorAll('#style-toggle .chip').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.value === normalized);
+      });
+    }
+
+    function renderDeck(deck, options = {}) {
+      const forceReload = Boolean(options.forceReload);
+      ensureSlideFlags(deck);
+      renderSlideControls(deck);
+      syncQmdFromDeck(deck);
+      if (Number.isInteger(Number(deck.requestedSlideCount)) && Number(deck.requestedSlideCount) > 0) {
+        slideCountInput.value = String(deck.requestedSlideCount);
+      }
+      syncTeachingStyleToggle(deck.teachingStyle || selectedTeachingStyle);
+
+      if (deck.format === 'quarto' && deck.renderUrl) {
+        const baseUrl = String(deck.renderUrl || '');
+        const token = forceReload ? (deck.updatedAt || Date.now()) : (deck.revision || 1);
+        const version = encodeURIComponent(token);
+        const src = `${escapeHtml(baseUrl)}?v=${version}`;
+        const noteText = `Revision ${deck.revision || 1} | Deck ID: ${escapeHtml(deck.id || '')} | Click a slide title above to jump pages.`;
+
+        const existingFrame = document.getElementById('deck-preview-frame');
+        const existingNote = document.getElementById('render-note');
+        if (
+          existingFrame instanceof HTMLIFrameElement &&
+          existingNote instanceof HTMLElement &&
+          !forceReload
+        ) {
+          const prevBase = existingFrame.dataset.baseUrl || '';
+          if (prevBase !== baseUrl) {
+            existingFrame.src = src;
+            existingFrame.dataset.baseUrl = baseUrl;
+          }
+          existingNote.textContent = noteText;
+          return;
+        }
+
+        preview.innerHTML = `
+          <iframe
+            id="deck-preview-frame"
+            class="deck-frame"
+            data-base-url="${escapeHtml(baseUrl)}"
+            src="${src}"
+            title="Rendered Quarto Slides Preview"
+          ></iframe>
+          <div id="render-note" class="render-note">${noteText}</div>
+        `;
+        return;
+      }
+
+      const liHtml = (deck.bullets || []).map((b) => `<li>${escapeHtml(b)}</li>`).join('');
+      const qmdBlock = deck.format === 'quarto'
+        ? `<div class="qmd">${escapeHtml(deck.qmd || '')}</div>`
+        : `<div class="qmd">Google Slides export payload staged. Iterate here, then export.</div>`;
+
+      preview.innerHTML = `
+        <article class="slide">
+          <h2>${escapeHtml(deck.title || 'Untitled Deck')}</h2>
+          <p>${escapeHtml(deck.description || '')} | Revision ${deck.revision || 1}</p>
+          <ul>${liHtml}</ul>
+          ${qmdBlock}
+        </article>
+      `;
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    async function fetchJson(url, options) {
+      const res = await fetch(url, options);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const message = data.error || `Request failed with status ${res.status}`;
+        throw new Error(message);
+      }
+      return data;
+    }
+
+    async function pollJobToDeck(jobId) {
+      const maxPolls = 1200;
+      for (let i = 0; i < maxPolls; i += 1) {
+        const data = await fetchJson(`${API_BASE}/jobs/${encodeURIComponent(jobId)}`, { method: 'GET' });
+        const job = data.job || {};
+        updateProgress(job);
+        if (job.deck) {
+          currentDeck = job.deck;
+          renderDeck(currentDeck, { forceReload: job.state === 'completed' });
+        }
+        if (job.state === 'completed') {
+          return job.deck;
+        }
+        if (job.state === 'error') {
+          throw new Error(job.error || 'Render job failed');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 450));
+      }
+      throw new Error('Render job timed out');
+    }
+
+    async function callGenerate(promptText, file) {
+      const formData = new FormData();
+      formData.append('prompt', promptText);
+      formData.append('format', selectedFormat);
+      formData.append('animation', selectedAnimation);
+      formData.append('teachingStyle', selectedTeachingStyle);
+      formData.append('requestedSlideCount', String(slideCountInput.value || '8'));
+      if (file) formData.append('file', file);
+
+      const data = await fetchJson(`${API_BASE}/generate-job`, {
+        method: 'POST',
+        body: formData
+      });
+      return pollJobToDeck(data.jobId);
+    }
+
+    async function callRefine(feedback) {
+      const data = await fetchJson(`${API_BASE}/refine-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feedback,
+          currentDeck,
+          format: selectedFormat,
+          animation: selectedAnimation,
+          teachingStyle: selectedTeachingStyle,
+          requestedSlideCount: Number(slideCountInput.value || 8)
+        })
+      });
+      return pollJobToDeck(data.jobId);
+    }
+
+    async function callUpdateQmd(nextQmd) {
+      const data = await fetchJson(`${API_BASE}/deck/update-qmd`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deckId: currentDeck?.id,
+          qmd: nextQmd
+        })
+      });
+      return data.deck;
+    }
+
+    async function runGeneration(promptText, file, source = 'initial') {
+      try {
+        setStatus('building', 'Building');
+        setBusy(true);
+        setProgressVisible(true);
+        const deck = source === 'initial'
+          ? await callGenerate(promptText, file)
+          : await callRefine(promptText);
+        currentDeck = deck;
+        renderDeck(currentDeck);
+        setStatus('synced', 'Synced');
+        if (deck.renderWarning) {
+          addMessage(`Render warning: ${deck.renderWarning}`, 'ai');
+        }
+        if (deck.llmWarning) {
+          addMessage(`LLM warning: ${deck.llmWarning}`, 'ai');
+        }
+        addMessage(
+          source === 'initial'
+            ? 'Draft deck generated from backend. Add feedback to patch content/animation.'
+            : 'Update applied via backend refine endpoint.',
+          'ai'
+        );
+      } catch (error) {
+        setStatus('idle', 'Idle');
+        addMessage(`Error: ${error.message}. Start backend with: ./server.py`, 'ai');
+      } finally {
+        setProgressVisible(false);
+        setBusy(false);
+      }
+    }
+
+    async function saveQmdNow(mode = 'manual') {
+      if (!currentDeck) return;
+      const nextQmd = qmdInput.value;
+      if (!nextQmd.trim()) return;
+      if (mode !== 'force' && nextQmd === currentDeck.qmd) return;
+
+      try {
+        setStatus('building', 'Rendering');
+        setBusy(true);
+        const deck = await callUpdateQmd(nextQmd);
+        currentDeck = deck;
+        renderDeck(currentDeck);
+        setStatus('synced', 'Synced');
+        if (mode === 'manual') {
+          addMessage('Saved .qmd edits and re-rendered preview.', 'ai');
+        }
+      } catch (error) {
+        setStatus('idle', 'Idle');
+        addMessage(`QMD update failed: ${error.message}`, 'ai');
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    enterAppBtn.addEventListener('click', () => enterWorkspace(false));
+    enterDemoBtn.addEventListener('click', () => enterWorkspace(true));
+    tourReplayBtn.addEventListener('click', () => startCoverTour());
+
+    sendBtn.addEventListener('click', async () => {
+      const promptText = promptInput.value.trim();
+      if (!promptText && !attachedFile) return;
+
+      const fileToSend = attachedFile;
+      let userText = '';
+      if (fileToSend) userText += `Attached source: ${fileToSend.name}\n`;
+      userText += promptText || 'Use the attached source to create a draft deck.';
+      addMessage(userText, 'user');
+
+      promptInput.value = '';
+      setAttachment(null);
+      await runGeneration(promptText || userText, fileToSend, 'initial');
+    });
+
+    promptInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendBtn.click();
+      }
+    });
+
+    uploadBtn.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      setAttachment(file);
+      promptInput.focus();
+    });
+
+    removeFileBtn.addEventListener('click', () => setAttachment(null));
+
+    clearSlideFlagsBtn.addEventListener('click', () => {
+      if (!currentDeck) return;
+      currentDeck.lockedSlideIndexes = [];
+      currentDeck.approvedSlideIndexes = [];
+      renderSlideControls(currentDeck);
+    });
+
+    modeHideBtn.addEventListener('click', () => setQmdViewMode('hide'));
+    modeSplitBtn.addEventListener('click', () => {
+      setQmdViewMode('split');
+      qmdInput.focus();
+    });
+    modeFullBtn.addEventListener('click', () => {
+      setQmdViewMode('full');
+      qmdInput.focus();
+    });
+
+    saveQmdBtn.addEventListener('click', async () => {
+      await saveQmdNow('manual');
+    });
+
+    qmdInput.addEventListener('input', () => {
+      if (!liveQmdToggle.checked || !currentDeck) return;
+      if (qmdLiveTimer) clearTimeout(qmdLiveTimer);
+      qmdLiveTimer = setTimeout(() => {
+        saveQmdNow('live');
+      }, 900);
+    });
+
+    applyFeedbackBtn.addEventListener('click', async () => {
+      const feedback = feedbackInput.value.trim();
+      if (!feedback || !currentDeck) return;
+      ensureSlideFlags(currentDeck);
+      const protectedCount = new Set([
+        ...(currentDeck.lockedSlideIndexes || []),
+        ...(currentDeck.approvedSlideIndexes || [])
+      ]).size;
+      if (protectedCount > 0) {
+        addMessage(`Applying feedback with ${protectedCount} protected slide(s).`, 'ai');
+      }
+      addMessage(`Feedback: ${feedback}`, 'user');
+      feedbackInput.value = '';
+      await runGeneration(feedback, null, 'feedback');
+    });
+
+    feedbackInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        applyFeedbackBtn.click();
+      }
+    });
+
+    document.querySelectorAll('#format-toggle .chip').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#format-toggle .chip').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedFormat = btn.dataset.value;
+        if (currentDeck) {
+          currentDeck.format = selectedFormat;
+          renderDeck(currentDeck);
+        }
+      });
+    });
+
+    document.querySelectorAll('#anim-toggle .chip').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#anim-toggle .chip').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedAnimation = btn.dataset.value;
+      });
+    });
+
+    document.querySelectorAll('#style-toggle .chip').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        syncTeachingStyleToggle(btn.dataset.value || 'balanced');
+        if (currentDeck) {
+          currentDeck.teachingStyle = selectedTeachingStyle;
+        }
+      });
+    });
+
+    downloadQmdBtn.addEventListener('click', () => {
+      if (!currentDeck?.qmd) return;
+      const blob = new Blob([currentDeck.qmd], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'statedu-deck.qmd';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    exportBtn.addEventListener('click', async () => {
+      if (!currentDeck) return;
+      try {
+        setBusy(true);
+        const data = await fetchJson(`${API_BASE}/export/google-slides`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deck: currentDeck })
+        });
+        addMessage(`Export queued. Open: ${data.url}`, 'ai');
+      } catch (error) {
+        addMessage(`Export failed: ${error.message}`, 'ai');
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    setQmdViewMode('hide');
+    syncTeachingStyleToggle('balanced');
+    if (window.location.hash === '#app') {
+      enterWorkspace(false);
+    } else if (window.location.hash === '#demo') {
+      enterWorkspace(true);
+    } else {
+      setTimeout(() => startCoverTour(), 450);
+    }
+
+    (async () => {
+      try {
+        const health = await fetchJson(`${API_BASE}/health`, { method: 'GET' });
+        if (!health.quartoInstalled) {
+          addMessage('Quarto CLI is not installed, so live iframe rendering is disabled. Install Quarto to enable real render preview.', 'ai');
+        }
+        if (!health.llmConfigured) {
+          addMessage(`LLM provider "${health.llmProvider}" is not configured. Generation will use fallback logic until you set an API key.`, 'ai');
+        } else if (health.llmProvider !== 'mock') {
+          addMessage(`LLM connected: ${health.llmProvider} (${health.llmModel}).`, 'ai');
+        }
+      } catch (_) {
+        // silent
+      }
+    })();
+  </script>
+</body>
+</html>
