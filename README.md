@@ -35,6 +35,7 @@ The app generates editable Quarto Reveal.js slides, renders live previews, suppo
 - Slide-level protection during refine (`approve` / `lock`)
 - Stage-aware progress tracking in workspace and cover page pipeline panel
 - Research-first generation flow (Genspark-style): source upload + web findings -> template -> per-slide content generation -> review -> fact-check -> correction -> image generation -> render
+- Optional video-style emulation cues from topic-relevant lesson videos (when discoverable via web research)
 - Optional Google Slides export handshake endpoint
 
 ## Tech Stack
@@ -88,8 +89,10 @@ http://127.0.0.1:8000
 - `STATEDU_WEB_RESEARCH_ENABLED` (`1` or `0`, default: `1`)
 - `STATEDU_WEB_RESEARCH_MAX_RESULTS` (default: `5`)
 - `STATEDU_WEB_RESEARCH_TIMEOUT_SEC` (default: `6`)
+- `STATEDU_VIDEO_RESEARCH_ENABLED` (`1` or `0`, default: `1`)
+- `STATEDU_VIDEO_RESEARCH_MAX_RESULTS` (default: `2`)
 - `STATEDU_IMAGE_GENERATION_ENABLED` (`1` or `0`, default: `1`)
-- `STATEDU_IMAGE_PROVIDER` (`local`, `openai`, `none`; default: `local`)
+- `STATEDU_IMAGE_PROVIDER` (`auto`, `local`, `openai`, `none`; default: `auto`)
 - `STATEDU_IMAGE_MAX_SLIDES` (default: `12`)
 - `STATEDU_IMAGE_STYLE_PROMPT` (style hint for generated visuals)
 - `STATEDU_OPENAI_IMAGE_MODEL` (default: `gpt-image-1`)

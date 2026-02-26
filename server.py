@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -68,7 +69,7 @@ WEB_RESEARCH_MAX_RESULTS = int(os.getenv("STATEDU_WEB_RESEARCH_MAX_RESULTS", "5"
 WEB_RESEARCH_TIMEOUT_SEC = int(os.getenv("STATEDU_WEB_RESEARCH_TIMEOUT_SEC", "6"))
 SLIDE_AUTO_SPLIT_ENABLED = os.getenv("STATEDU_SLIDE_AUTO_SPLIT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 IMAGE_GENERATION_ENABLED = os.getenv("STATEDU_IMAGE_GENERATION_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-IMAGE_PROVIDER = os.getenv("STATEDU_IMAGE_PROVIDER", "local").strip().lower()
+IMAGE_PROVIDER = os.getenv("STATEDU_IMAGE_PROVIDER", "auto").strip().lower()
 IMAGE_MAX_SLIDES = max(1, min(MAX_SLIDE_COUNT, int(os.getenv("STATEDU_IMAGE_MAX_SLIDES", "12"))))
 IMAGE_STYLE_PROMPT = os.getenv(
     "STATEDU_IMAGE_STYLE_PROMPT",
@@ -76,6 +77,8 @@ IMAGE_STYLE_PROMPT = os.getenv(
 ).strip()
 OPENAI_IMAGE_MODEL = os.getenv("STATEDU_OPENAI_IMAGE_MODEL", "gpt-image-1").strip()
 OPENAI_IMAGE_SIZE = os.getenv("STATEDU_OPENAI_IMAGE_SIZE", "1536x1024").strip()
+VIDEO_RESEARCH_ENABLED = os.getenv("STATEDU_VIDEO_RESEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+VIDEO_RESEARCH_MAX_RESULTS = max(0, int(os.getenv("STATEDU_VIDEO_RESEARCH_MAX_RESULTS", "2")))
 
 MAX_SUBTITLE_CHARS = 120
 MAX_BULLET_CHARS = 150
@@ -214,9 +217,11 @@ def llm_status() -> dict[str, object]:
 
 
 def resolve_image_provider() -> str:
-    provider = IMAGE_PROVIDER or "local"
+    provider = IMAGE_PROVIDER or "auto"
     if provider in {"openai", "local", "none", "off"}:
         return provider
+    if provider == "auto":
+        return "openai" if bool(resolve_image_key("openai")) else "local"
     return "local"
 
 
@@ -464,6 +469,92 @@ def search_wikipedia(query: str, limit: int) -> list[dict[str, str]]:
     return results
 
 
+def search_youtube_feed(query: str, limit: int) -> list[dict[str, str]]:
+    if limit <= 0:
+        return []
+    url = f"https://www.youtube.com/feeds/videos.xml?search_query={quote_plus(query)}"
+    req = urlrequest.Request(
+        url,
+        headers={
+            "User-Agent": "StatEduSlidesHelperAI/0.3 (+https://localhost)",
+            "Accept": "application/atom+xml, application/xml, text/xml, */*",
+        },
+        method="GET",
+    )
+    with urlrequest.urlopen(req, timeout=WEB_RESEARCH_TIMEOUT_SEC) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+    root = ET.fromstring(raw)
+
+    atom_ns = "{http://www.w3.org/2005/Atom}"
+    media_ns = "{http://search.yahoo.com/mrss/}"
+    yt_ns = "{http://www.youtube.com/xml/schemas/2015}"
+
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in root.findall(f"{atom_ns}entry"):
+        if len(results) >= limit:
+            break
+        title = sanitize_text(entry.findtext(f"{atom_ns}title", default=""))
+        link_el = entry.find(f"{atom_ns}link")
+        url = ""
+        if link_el is not None:
+            url = str(link_el.attrib.get("href", "")).strip()
+        if not url:
+            video_id = sanitize_text(entry.findtext(f"{yt_ns}videoId", default=""))
+            if video_id:
+                url = f"https://www.youtube.com/watch?v={video_id}"
+        author = sanitize_text(entry.findtext(f"{atom_ns}author/{atom_ns}name", default=""))
+        description = sanitize_text(entry.findtext(f"{media_ns}group/{media_ns}description", default=""))
+        snippet = description or (f"Video lesson from {author}." if author else "Video lesson reference.")
+        add_research_item(
+            results,
+            seen,
+            title=title,
+            url=url,
+            snippet=snippet,
+            provider="youtube",
+            limit=limit,
+        )
+    return results
+
+
+def is_video_result(item: dict[str, str]) -> bool:
+    domain = str(item.get("domain", "")).lower()
+    url = str(item.get("url", "")).lower()
+    return (
+        "youtube.com" in domain
+        or "youtu.be" in domain
+        or "youtube.com" in url
+        or "youtu.be" in url
+        or "vimeo.com" in domain
+        or "vimeo.com" in url
+    )
+
+
+def derive_video_style_hints(results: list[dict[str, str]]) -> list[str]:
+    video_items = [item for item in results if isinstance(item, dict) and is_video_result(item)]
+    if not video_items:
+        return []
+    corpus = " ".join(
+        f"{sanitize_text(item.get('title', ''))} {clean_html_snippet(item.get('snippet', ''))}".lower()
+        for item in video_items
+    )
+    hints: list[str] = []
+    if any(token in corpus for token in ["intuition", "intuitive", "conceptual"]):
+        hints.append("Lead each section with intuition before formal notation.")
+    if any(token in corpus for token in ["step-by-step", "step by step", "walkthrough"]):
+        hints.append("Use step-by-step reveals for derivations and worked examples.")
+    if any(token in corpus for token in ["live coding", "code along", "coding"]):
+        hints.append("Narrate code in short chunks and interpret output immediately.")
+    if any(token in corpus for token in ["visual", "animation", "graph", "plot"]):
+        hints.append("Prefer visual-first explanations using plots and diagrams.")
+    if any(token in corpus for token in ["practice", "exercise", "quiz", "check"]):
+        hints.append("Add short practice checks right after key concepts.")
+    if not hints:
+        hints.append("Use concise, student-facing teaching style common in intro statistics video lessons.")
+    return hints[:3]
+
+
 def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> tuple[list[dict[str, str]], str | None]:
     if not WEB_RESEARCH_ENABLED:
         return [], None
@@ -523,6 +614,36 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
                 failures += 1
                 if failures >= 4 and not aggregated:
                     break
+
+    if VIDEO_RESEARCH_ENABLED and VIDEO_RESEARCH_MAX_RESULTS > 0:
+        video_slots = min(VIDEO_RESEARCH_MAX_RESULTS, max(1, limit // 2))
+        for query in queries:
+            if video_slots <= 0:
+                break
+            try:
+                video_results = search_youtube_feed(f"{query} statistics", limit=video_slots)
+                for item in video_results:
+                    url = item.get("url", "")
+                    title = str(item.get("title", ""))
+                    snippet = str(item.get("snippet", ""))
+                    if not url or url in seen_urls:
+                        continue
+                    if not is_research_item_relevant(prompt=prompt, title=title, snippet=snippet):
+                        continue
+                    seen_urls.add(url)
+                    if len(aggregated) >= limit:
+                        # Prefer keeping at least one video reference in final context.
+                        replace_idx = next((i for i in range(len(aggregated) - 1, -1, -1) if not is_video_result(aggregated[i])), None)
+                        if replace_idx is not None:
+                            aggregated[replace_idx] = item
+                            video_slots -= 1
+                    else:
+                        aggregated.append(item)
+                        video_slots -= 1
+                    if video_slots <= 0:
+                        break
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"youtube: {exc}")
 
     warning = None
     if not aggregated and warnings:
@@ -868,9 +989,21 @@ def normalize_equation_tokens(expr: str) -> str:
         "−": "-",
         "–": "-",
         "×": r"\times",
+        "²": "^2",
+        "³": "^3",
+        "⁴": "^4",
+        "⁵": "^5",
+        "𝒩": "N",
+        "𝓝": "N",
+        "ℕ": "N",
+        "𝐍": "N",
     }
     for src, dst in replacements.items():
         out = out.replace(src, dst)
+    # Avoid calligraphic glyph dependency that can show as tofu square in some render setups.
+    out = re.sub(r"\\+mathcal\s*\{\s*N\s*\}", "N", out)
+    out = re.sub(r"\\+mathcal\s+N", "N", out)
+    out = re.sub(r"\\N(?=\s*[\(\{\[])", "N", out)
     out = re.sub(r"\|\|\s*([^|]+?)\s*\|\|", r"\\lVert \1 \\rVert", out)
     out = re.sub(r"\bargmin\b", r"\\arg\\min", out, flags=re.IGNORECASE)
     out = re.sub(r"\s+", " ", out).strip()
@@ -1859,6 +1992,7 @@ def maybe_generate_with_llm(
         progress_cb("web_research", 0.12)
     web_research, research_warning = collect_web_research(prompt, source_excerpt_short, WEB_RESEARCH_MAX_RESULTS)
     research_context = format_research_context(web_research)
+    video_style_hints = derive_video_style_hints(web_research)
     if research_warning:
         stage_warnings.append(research_warning)
 
@@ -1921,6 +2055,10 @@ def maybe_generate_with_llm(
             "\nWeb research context (use this to plan a stronger progression and examples):\n"
             f"{research_context}\n"
         )
+    if video_style_hints:
+        template_user += "\nTeaching-style cues from existing topic videos:\n"
+        for hint in video_style_hints:
+            template_user += f"- {hint}\n"
     if feedback:
         template_user += f"\nRefinement feedback:\n{feedback}\n"
     if previous_context:
@@ -1995,6 +2133,10 @@ def maybe_generate_with_llm(
                 "\nWeb research facts to incorporate only if relevant:\n"
                 f"{research_context}\n"
             )
+        if video_style_hints:
+            slide_user += "\nTeaching-style cues from topic videos (apply if compatible with prompt/style):\n"
+            for hint in video_style_hints:
+                slide_user += f"- {hint}\n"
         if source_excerpt_short:
             slide_user += f"\nSource excerpt:\n{source_excerpt_short}\n"
         if feedback:
@@ -3225,6 +3367,8 @@ class Handler(BaseHTTPRequestHandler):
                     "webResearchEnabled": WEB_RESEARCH_ENABLED,
                     "webResearchMaxResults": WEB_RESEARCH_MAX_RESULTS,
                     "webResearchTimeoutSec": WEB_RESEARCH_TIMEOUT_SEC,
+                    "videoResearchEnabled": VIDEO_RESEARCH_ENABLED,
+                    "videoResearchMaxResults": VIDEO_RESEARCH_MAX_RESULTS,
                     "imageGenerationEnabled": image["enabled"],
                     "imageProvider": image["provider"],
                     "imageModel": image["model"],
@@ -3580,6 +3724,8 @@ def main() -> None:
     print(f"LLM provider: {llm['provider']} ({'configured' if llm['configured'] else 'not configured'})")
     print(f"LLM model: {llm['model']}")
     print(f"Slide auto-split: {'on' if SLIDE_AUTO_SPLIT_ENABLED else 'off'}")
+    print(f"Web research: {'on' if WEB_RESEARCH_ENABLED else 'off'} (maxResults={WEB_RESEARCH_MAX_RESULTS})")
+    print(f"Video research: {'on' if VIDEO_RESEARCH_ENABLED else 'off'} (maxResults={VIDEO_RESEARCH_MAX_RESULTS})")
     print(
         "Image stage: "
         f"{image['provider']} ({image['model']}, "
