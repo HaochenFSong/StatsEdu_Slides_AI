@@ -1,4 +1,4 @@
-# StatEdu Slides Helper AI
+# StatEdu Quarto Slides Helper GENAI
 
 StatEdu Slides Helper AI is a human-in-the-loop web app for building classroom-ready statistics slide decks from prompts and source materials (textbook excerpts, notes, and existing slides).
 
