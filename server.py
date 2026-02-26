@@ -742,6 +742,21 @@ def normalize_material_list(raw: object, max_items: int = 3) -> list[str]:
     return out[:max_items]
 
 
+def polish_sentence_field(text: object, max_chars: int) -> str:
+    value = clamp_sentence(text, max_chars)
+    if not value:
+        return ""
+    value = re.sub(
+        r"\b(of|to|for|with|by|from|and|or|that|which|when|where|while|as|in|on|at|into|about|using|based)\s*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip(" ,;:-")
+    if value and value[-1:] not in ".!?":
+        value += "."
+    return value
+
+
 def compose_student_bullets(
     definition: str,
     context: str,
@@ -750,17 +765,8 @@ def compose_student_bullets(
     *,
     max_items: int = 6,
 ) -> list[str]:
-    combined: list[str] = []
-    if definition:
-        combined.append(definition)
-    if context:
-        combined.append(context)
-    for material in materials:
-        combined.append(material)
-    combined.extend(bullets)
-
     out: list[str] = []
-    for item in combined:
+    for item in bullets:
         txt = clamp_sentence(sanitize_bullet_text(item), MAX_BULLET_CHARS)
         if not txt or is_presenter_directive(txt):
             continue
@@ -768,6 +774,27 @@ def compose_student_bullets(
             out.append(txt)
         if len(out) >= max_items:
             break
+
+    if len(out) < 2:
+        for item in [definition, context]:
+            txt = clamp_sentence(sanitize_bullet_text(item), MAX_BULLET_CHARS)
+            if not txt or is_presenter_directive(txt):
+                continue
+            if txt not in out:
+                out.append(txt)
+            if len(out) >= max_items:
+                break
+
+    if len(out) < 3:
+        for item in materials:
+            txt = clamp_sentence(sanitize_bullet_text(item), MAX_BULLET_CHARS)
+            if not txt or is_presenter_directive(txt):
+                continue
+            if txt not in out:
+                out.append(txt)
+            if len(out) >= max_items:
+                break
+
     return out
 
 
@@ -953,7 +980,7 @@ def normalize_sections(raw_title: str, raw_slides: object, fallback_title: str, 
             if not isinstance(item, dict):
                 continue
             slide_title = sanitize_text(item.get("title", "")) or f"{title} ({idx + 1})"
-            subtitle = clamp_sentence(item.get("subtitle", ""), MAX_SUBTITLE_CHARS)
+            subtitle = polish_sentence_field(item.get("subtitle", ""), MAX_SUBTITLE_CHARS)
             bullets_raw = item.get("bullets", [])
             bullets: list[str] = []
             if isinstance(bullets_raw, list):
@@ -965,16 +992,16 @@ def normalize_sections(raw_title: str, raw_slides: object, fallback_title: str, 
             layout = sanitize_text(item.get("layout", "concept")).lower() or "concept"
             if layout not in {"title", "concept", "formula", "simulation", "example", "activity", "summary"}:
                 layout = "concept"
-            definition = clamp_sentence(item.get("definition", ""), 96)
-            context = clamp_sentence(item.get("context", ""), 96)
+            definition = polish_sentence_field(item.get("definition", ""), 96)
+            context = polish_sentence_field(item.get("context", ""), 96)
             materials = normalize_material_list(
                 item.get("studentMaterials", item.get("materials", [])),
                 max_items=3,
             )
-            example = clamp_sentence(item.get("example", ""), MAX_EXAMPLE_CHARS)
-            activity = clamp_sentence(item.get("activity", ""), MAX_ACTIVITY_CHARS)
+            example = polish_sentence_field(item.get("example", ""), MAX_EXAMPLE_CHARS)
+            activity = polish_sentence_field(item.get("activity", ""), MAX_ACTIVITY_CHARS)
             equation = str(item.get("equation", "")).strip()
-            notes = clamp_sentence(item.get("notes", ""), MAX_NOTES_CHARS)
+            notes = polish_sentence_field(item.get("notes", ""), MAX_NOTES_CHARS)
             r_chunk = str(item.get("rChunk", "")).strip()
             figure_path = str(item.get("figurePath", "")).strip()
             if is_unhelpful_source_sentence(notes):
@@ -1049,17 +1076,17 @@ def normalize_slide_obj(raw: object, idx: int) -> dict[str, object]:
         }
 
     title = sanitize_text(raw.get("title", "")) or f"Slide {idx + 1}"
-    subtitle = clamp_sentence(raw.get("subtitle", ""), MAX_SUBTITLE_CHARS)
+    subtitle = polish_sentence_field(raw.get("subtitle", ""), MAX_SUBTITLE_CHARS)
     layout = sanitize_text(raw.get("layout", "concept")).lower() or "concept"
     if layout not in {"title", "concept", "formula", "simulation", "example", "activity", "summary"}:
         layout = "concept"
-    definition = clamp_sentence(raw.get("definition", ""), 96)
-    context = clamp_sentence(raw.get("context", ""), 96)
+    definition = polish_sentence_field(raw.get("definition", ""), 96)
+    context = polish_sentence_field(raw.get("context", ""), 96)
     materials = normalize_material_list(raw.get("studentMaterials", raw.get("materials", [])), max_items=3)
-    example = clamp_sentence(raw.get("example", ""), MAX_EXAMPLE_CHARS)
-    activity = clamp_sentence(raw.get("activity", ""), MAX_ACTIVITY_CHARS)
+    example = polish_sentence_field(raw.get("example", ""), MAX_EXAMPLE_CHARS)
+    activity = polish_sentence_field(raw.get("activity", ""), MAX_ACTIVITY_CHARS)
     equation = str(raw.get("equation", "")).strip()
-    notes = clamp_sentence(raw.get("notes", ""), MAX_NOTES_CHARS)
+    notes = polish_sentence_field(raw.get("notes", ""), MAX_NOTES_CHARS)
     r_chunk = str(raw.get("rChunk", "")).strip()
     figure_path = str(raw.get("figurePath", "")).strip()
     bullets_raw = raw.get("bullets", [])
@@ -1162,24 +1189,17 @@ def rendered_bullet_limit(layout: str) -> int:
     return 4
 
 
-def chunk_bullets_by_budget(bullets: list[str], max_bullets: int, max_chars_total: int) -> list[list[str]]:
-    groups: list[list[str]] = []
-    current: list[str] = []
-    current_chars = 0
-    for raw in bullets:
-        txt = clamp_sentence(sanitize_bullet_text(raw), MAX_BULLET_CHARS)
-        if not txt:
-            continue
-        projected = current_chars + len(txt)
-        if current and (len(current) >= max_bullets or projected > max_chars_total):
-            groups.append(current)
-            current = []
-            current_chars = 0
-        current.append(txt)
-        current_chars += len(txt)
-    if current:
-        groups.append(current)
-    return groups
+def split_code_into_chunks(code: str, max_lines: int) -> list[str]:
+    lines = [line.rstrip() for line in str(code or "").splitlines()]
+    lines = [line for line in lines if line.strip() or line == ""]
+    if not lines:
+        return []
+    chunks: list[str] = []
+    for start in range(0, len(lines), max_lines):
+        block = "\n".join(lines[start : start + max_lines]).strip()
+        if block:
+            chunks.append(block)
+    return chunks
 
 
 def continuation_title(base_title: str, continuation_idx: int) -> str:
@@ -1198,108 +1218,115 @@ def split_slide_for_readability(raw_slide: object, idx: int) -> list[dict[str, o
     slide = normalize_slide_obj(raw_slide, idx)
     layout = str(slide.get("layout", "concept")).lower()
     limits = slide_layout_limits(layout)
-    max_bullets = limits["max_bullets"]
-    max_chars_total = limits["max_bullet_chars_total"]
+    max_bullets = rendered_bullet_limit(layout)
     max_aux_chars = limits["max_aux_chars"]
+    max_eq_steps = max(1, limits["max_equation_steps"])
+    max_r_lines = max(6, limits["max_r_lines"])
 
     first = dict(slide)
-    overflow_bullets: list[str] = []
-    equation_overflow = ""
-    rchunk_overflow = ""
+    first["bullets"] = list(first.get("bullets", []))[:max_bullets]
+    continuation_slides: list[dict[str, object]] = []
 
     if layout == "example":
         example_text = str(first.get("example", "")).strip()
         chunks = split_text_into_chunks(example_text, max_aux_chars, max_chunks=4)
         if len(chunks) > 1:
             first["example"] = chunks[0]
-            overflow_bullets.extend([f"Worked example continuation: {chunk}" for chunk in chunks[1:]])
+            for chunk in chunks[1:]:
+                continuation_slides.append(
+                    {
+                        "layout": "example",
+                        "subtitle": "Worked example continuation",
+                        "bullets": [
+                            "Continue the worked example using the same interpretation framework.",
+                            "Focus on what changes in the setup and what stays fixed.",
+                        ],
+                        "example": chunk,
+                    }
+                )
 
     if layout == "activity":
         activity_text = str(first.get("activity", "")).strip()
         chunks = split_text_into_chunks(activity_text, max_aux_chars, max_chunks=4)
         if len(chunks) > 1:
             first["activity"] = chunks[0]
-            overflow_bullets.extend([f"Activity continuation: {chunk}" for chunk in chunks[1:]])
+            for chunk in chunks[1:]:
+                continuation_slides.append(
+                    {
+                        "layout": "activity",
+                        "subtitle": "Activity continuation",
+                        "bullets": [
+                            "Continue the activity steps and keep the decision rule explicit.",
+                            "Check whether each group can justify its conclusion with evidence.",
+                        ],
+                        "activity": chunk,
+                    }
+                )
 
-    if layout == "formula":
-        equation_text = str(first.get("equation", "")).strip()
+    equation_text = str(first.get("equation", "")).strip()
+    if equation_text:
         steps, _ = parse_equation_payload(equation_text)
-        max_eq_steps = max(1, limits["max_equation_steps"])
         if len(steps) > max_eq_steps:
             first["equation"] = "\n".join(steps[:max_eq_steps])
-            equation_overflow = "\n".join(steps[max_eq_steps:])
+            remaining = steps[max_eq_steps:]
+            continuation_slides.append(
+                {
+                    "layout": "formula",
+                    "subtitle": "Formula continuation",
+                    "bullets": [
+                        "Continue equation steps and tie each symbol to interpretation.",
+                        "Highlight the decision implication after each transformation.",
+                    ],
+                    "equation": "\n".join(remaining),
+                }
+            )
 
-    if layout == "simulation":
-        code = str(first.get("rChunk", "")).strip()
-        if code:
-            lines = code.splitlines()
-            max_r_lines = max(6, limits["max_r_lines"])
-            if len(lines) > max_r_lines:
-                first["rChunk"] = "\n".join(lines[:max_r_lines]).strip()
-                rchunk_overflow = "\n".join(lines[max_r_lines:]).strip()
-                overflow_bullets.append("Continue code walkthrough on the next slide.")
+    code_text = str(first.get("rChunk", "")).strip()
+    if code_text:
+        code_chunks = split_code_into_chunks(code_text, max_r_lines)
+        if len(code_chunks) > 1:
+            carry_layout = "simulation"
+            start_idx = 1
+            if layout != "example":
+                first["rChunk"] = code_chunks[0]
+            else:
+                first["rChunk"] = ""
+                start_idx = 0
+            for block in code_chunks[start_idx:]:
+                continuation_slides.append(
+                    {
+                        "layout": carry_layout,
+                        "subtitle": "Code continuation",
+                        "bullets": [
+                            "Continue code execution and verify intermediate results.",
+                            "Interpret output before moving to the next code block.",
+                        ],
+                        "rChunk": block,
+                    }
+                )
 
-    visible_limit = rendered_bullet_limit(layout)
-    source_bullets = list(first.get("bullets", []))[:visible_limit]
-    source_bullets.extend(overflow_bullets)
-    bullet_groups = chunk_bullets_by_budget(source_bullets, max_bullets, max_chars_total)
-    if not bullet_groups:
-        bullet_groups = [[]]
-    first["bullets"] = bullet_groups[0][:max_bullets] if bullet_groups[0] else list(first.get("bullets", []))[:max_bullets]
-
-    needs_split = len(bullet_groups) > 1 or bool(equation_overflow) or bool(rchunk_overflow)
-    if not needs_split:
-        return [first]
+    if not continuation_slides:
+        return [normalize_slide_obj(first, idx)]
 
     split_slides: list[dict[str, object]] = [normalize_slide_obj(first, idx)]
-    extra_groups = bullet_groups[1:]
-    continuation_idx = 1
-
-    while extra_groups or equation_overflow or rchunk_overflow:
-        group = extra_groups.pop(0) if extra_groups else []
-        cont_layout = "concept"
-        cont_subtitle = "Continuation"
-        cont_equation = ""
-        cont_rchunk = ""
-
-        if equation_overflow:
-            cont_layout = "formula"
-            cont_subtitle = "Formula continuation"
-            cont_equation = equation_overflow
-            equation_overflow = ""
-        elif rchunk_overflow:
-            cont_layout = "simulation"
-            cont_subtitle = "Code continuation"
-            cont_rchunk = rchunk_overflow
-            rchunk_overflow = ""
-        elif layout in {"concept", "summary"}:
-            cont_layout = layout
-
-        if not group:
-            if cont_layout == "formula":
-                group = ["Continue equation interpretation in context."]
-            elif cont_layout == "simulation":
-                group = ["Continue simulation interpretation and connect to the learning objective."]
-            else:
-                group = ["Continue key ideas from the previous slide."]
-
+    base_title = str(first.get("title", ""))
+    for cont_idx, partial in enumerate(continuation_slides, start=1):
         cont = {
-            "title": continuation_title(str(first.get("title", "")), continuation_idx),
-            "subtitle": cont_subtitle,
-            "layout": cont_layout,
-            "bullets": group[:max_bullets],
+            "title": continuation_title(base_title, cont_idx),
+            "subtitle": str(partial.get("subtitle", "Continuation")),
+            "layout": str(partial.get("layout", "concept")),
+            "bullets": list(partial.get("bullets", []))[:max_bullets],
             "definition": "",
             "context": "",
             "studentMaterials": [],
-            "example": "",
-            "activity": "",
-            "equation": cont_equation,
+            "example": str(partial.get("example", "")),
+            "activity": str(partial.get("activity", "")),
+            "equation": str(partial.get("equation", "")),
             "notes": "",
-            "rChunk": cont_rchunk,
+            "rChunk": str(partial.get("rChunk", "")),
             "figurePath": "",
         }
-        split_slides.append(normalize_slide_obj(cont, idx + continuation_idx))
-        continuation_idx += 1
+        split_slides.append(normalize_slide_obj(cont, idx + cont_idx))
 
     return split_slides
 
@@ -2442,7 +2469,7 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
             return f"## {clean_title}"
         return (
             f'## {clean_title} '
-            f'{{background-image="{fig}" background-size="cover" background-position="right center" background-opacity="0.10"}}'
+            f'{{background-image="{fig}" background-size="cover" background-position="right center" background-opacity="0.06"}}'
         )
 
     for idx, raw_slide in enumerate(sections):
@@ -2657,51 +2684,30 @@ def svg_palette_for_layout(layout: str) -> tuple[str, str, str]:
 
 
 def build_slide_illustration_svg(slide: dict[str, object], idx: int) -> str:
-    title = sanitize_text(slide.get("title", f"Slide {idx + 1}"))
-    subtitle = sanitize_text(slide.get("subtitle", ""))
-    bullets = slide.get("bullets", []) if isinstance(slide.get("bullets"), list) else []
     layout = sanitize_text(slide.get("layout", "concept")).lower()
     bg, accent_soft, accent = svg_palette_for_layout(layout)
-
-    title_lines = wrap_svg_lines(title, max_chars=32, max_lines=2)
-    subtitle_lines = wrap_svg_lines(subtitle, max_chars=40, max_lines=2)
-    bullet_lines: list[str] = []
-    for item in bullets[:3]:
-        bullet_lines.extend(wrap_svg_lines(str(item), max_chars=40, max_lines=1))
-
-    title_svg = "\n".join(
-        [
-            f'<text x="120" y="{190 + i * 56}" fill="#13233f" font-size="50" font-weight="700" font-family="Arial, sans-serif">{html.escape(line)}</text>'
-            for i, line in enumerate(title_lines)
-        ]
-    )
-    subtitle_svg = "\n".join(
-        [
-            f'<text x="120" y="{320 + i * 34}" fill="#2f4a76" font-size="28" font-style="italic" font-family="Arial, sans-serif">{html.escape(line)}</text>'
-            for i, line in enumerate(subtitle_lines)
-        ]
-    )
-    bullet_svg = "\n".join(
-        [
-            f'<text x="154" y="{448 + i * 52}" fill="#1f2b45" font-size="30" font-family="Arial, sans-serif">• {html.escape(line)}</text>'
-            for i, line in enumerate(bullet_lines[:3])
-        ]
-    )
 
     return "\n".join(
         [
             '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">',
             f'<rect width="1600" height="900" fill="{bg}" />',
-            f'<circle cx="1300" cy="150" r="240" fill="{accent_soft}" opacity="0.45"/>',
-            f'<circle cx="1460" cy="780" r="260" fill="{accent_soft}" opacity="0.38"/>',
-            f'<rect x="82" y="108" width="1436" height="684" rx="26" fill="#ffffff" opacity="0.82" />',
-            f'<rect x="82" y="108" width="1436" height="684" rx="26" fill="none" stroke="{accent}" stroke-width="4" opacity="0.65" />',
-            f'<rect x="1020" y="210" width="430" height="362" rx="22" fill="{accent_soft}" opacity="0.50"/>',
-            f'<path d="M1060 520 L1130 450 L1210 505 L1290 390 L1380 450" fill="none" stroke="{accent}" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/>',
-            title_svg,
-            subtitle_svg,
-            bullet_svg,
-            f'<text x="120" y="760" fill="#2f4a76" font-size="24" font-family="Arial, sans-serif">StatEdu Illustration • Slide {idx + 1}</text>',
+            f'<circle cx="1330" cy="140" r="245" fill="{accent_soft}" opacity="0.24"/>',
+            f'<circle cx="1460" cy="770" r="265" fill="{accent_soft}" opacity="0.21"/>',
+            f'<circle cx="220" cy="120" r="170" fill="{accent_soft}" opacity="0.12"/>',
+            f'<rect x="76" y="96" width="1448" height="708" rx="30" fill="#ffffff" opacity="0.64" />',
+            f'<rect x="76" y="96" width="1448" height="708" rx="30" fill="none" stroke="{accent}" stroke-width="3" opacity="0.35" />',
+            f'<path d="M1010 240 L1425 240" fill="none" stroke="{accent}" stroke-width="8" opacity="0.28"/>',
+            f'<path d="M1010 310 L1390 310" fill="none" stroke="{accent}" stroke-width="8" opacity="0.22"/>',
+            f'<path d="M1010 380 L1440 380" fill="none" stroke="{accent}" stroke-width="8" opacity="0.18"/>',
+            f'<path d="M1040 560 L1130 470 L1210 515 L1295 410 L1385 468" fill="none" stroke="{accent}" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" opacity="0.34"/>',
+            f'<circle cx="1040" cy="560" r="10" fill="{accent}" opacity="0.40"/>',
+            f'<circle cx="1130" cy="470" r="10" fill="{accent}" opacity="0.40"/>',
+            f'<circle cx="1210" cy="515" r="10" fill="{accent}" opacity="0.40"/>',
+            f'<circle cx="1295" cy="410" r="10" fill="{accent}" opacity="0.40"/>',
+            f'<circle cx="1385" cy="468" r="10" fill="{accent}" opacity="0.40"/>',
+            f'<rect x="150" y="660" width="340" height="18" rx="9" fill="{accent}" opacity="0.16"/>',
+            f'<rect x="150" y="700" width="260" height="18" rx="9" fill="{accent}" opacity="0.14"/>',
+            f'<rect x="150" y="740" width="300" height="18" rx="9" fill="{accent}" opacity="0.12"/>',
             "</svg>",
         ]
     )
