@@ -248,6 +248,70 @@
       margin-top: 4px;
     }
 
+    .cover-pipeline {
+      margin-top: 6px;
+      border: 1px solid #d2dff7;
+      border-radius: 13px;
+      background: linear-gradient(150deg, #ffffff, #f5f9ff);
+      padding: 10px 11px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .cover-pipeline-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      color: #2e4f86;
+    }
+
+    .cover-pipeline-track {
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      background: #dce6fb;
+      overflow: hidden;
+    }
+
+    .cover-pipeline-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2368ff, #19b89c);
+      transition: width 0.15s ease;
+    }
+
+    .cover-pipeline-stages {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .cover-stage-chip {
+      text-align: center;
+      border: 1px solid #d5e2f8;
+      border-radius: 999px;
+      background: #f8fbff;
+      color: #4f6f9f;
+      font-size: 11px;
+      padding: 4px 6px;
+      font-weight: 700;
+    }
+
+    .cover-stage-chip.active {
+      border-color: #3f7ef0;
+      background: #edf4ff;
+      color: #1f4fa7;
+    }
+
+    .cover-stage-chip.done {
+      border-color: #29a383;
+      background: #ebfbf5;
+      color: #13795b;
+    }
+
     .highlight {
       border: 1px solid #d7e2f7;
       border-radius: 12px;
@@ -1043,6 +1107,10 @@
       .cover-highlights {
         grid-template-columns: 1fr;
       }
+
+      .cover-pipeline-stages {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
   </style>
 </head>
@@ -1091,6 +1159,22 @@
           <div class="highlight" data-tour-highlight="2">
             <strong>Editable QMD</strong>
             <span>Switch between Slides, Split, or Full QMD mode.</span>
+          </div>
+        </div>
+        <div class="cover-pipeline">
+          <div class="cover-pipeline-head">
+            <span id="cover-progress-stage">Pipeline stage: idle</span>
+            <span id="cover-progress-counter">0 / 0</span>
+          </div>
+          <div class="cover-pipeline-track">
+            <div id="cover-progress-fill" class="cover-pipeline-fill"></div>
+          </div>
+          <div class="cover-pipeline-stages">
+            <span class="cover-stage-chip" data-stage-key="template">Template</span>
+            <span class="cover-stage-chip" data-stage-key="content">Content</span>
+            <span class="cover-stage-chip" data-stage-key="review">Review</span>
+            <span class="cover-stage-chip" data-stage-key="correction">Correction</span>
+            <span class="cover-stage-chip" data-stage-key="render">Render</span>
           </div>
         </div>
       </div>
@@ -1288,6 +1372,10 @@
     const progressStage = document.getElementById('progress-stage');
     const progressCounter = document.getElementById('progress-counter');
     const progressFill = document.getElementById('progress-fill');
+    const coverProgressStage = document.getElementById('cover-progress-stage');
+    const coverProgressCounter = document.getElementById('cover-progress-counter');
+    const coverProgressFill = document.getElementById('cover-progress-fill');
+    const coverStageChips = Array.from(document.querySelectorAll('[data-stage-key]'));
     const slideControls = document.getElementById('slide-controls');
     const slideList = document.getElementById('slide-list');
     const clearSlideFlagsBtn = document.getElementById('clear-slide-flags-btn');
@@ -1445,12 +1533,66 @@
       modeFullBtn.disabled = false;
     }
 
+    function stageKeyFromRaw(stageRaw) {
+      const stage = String(stageRaw || '').toLowerCase();
+      if (stage === 'generating') return 'template';
+      if (stage === 'fallback_generation') return 'content';
+      if (stage.includes('template')) return 'template';
+      if (stage.includes('content')) return 'content';
+      if (stage.includes('review')) return 'review';
+      if (stage.includes('correction')) return 'correction';
+      if (stage.includes('render') || stage === 'completed') return 'render';
+      return '';
+    }
+
+    function stageLabelFromRaw(stageRaw) {
+      const stage = String(stageRaw || '').toLowerCase();
+      if (stage === 'queued') return 'Queued';
+      if (stage === 'generating') return 'Preparing generation';
+      if (stage === 'template_generation') return 'Template generation';
+      if (stage === 'content_generation') return 'Content generation';
+      if (stage === 'review_stage') return 'Review stage';
+      if (stage === 'correction_stage') return 'Correction stage';
+      if (stage === 'finalizing') return 'Finalizing deck';
+      if (stage === 'ready_for_render') return 'Ready for render';
+      if (stage === 'rendering') return 'Rendering deck';
+      if (stage.startsWith('rendering_slide_')) {
+        const n = Number(stage.replace('rendering_slide_', ''));
+        if (Number.isInteger(n) && n > 0) return `Rendering slide ${n}`;
+      }
+      if (stage === 'fallback_generation') return 'Fallback generation';
+      if (stage === 'completed') return 'Completed';
+      if (stage === 'error') return 'Error';
+      return stage.replaceAll('_', ' ');
+    }
+
+    function updateCoverStageChips(activeKey, progress) {
+      const order = ['template', 'content', 'review', 'correction', 'render'];
+      const activeIdx = order.indexOf(activeKey);
+      coverStageChips.forEach((chip) => {
+        const key = chip.dataset.stageKey;
+        const idx = order.indexOf(key);
+        chip.classList.toggle('active', key === activeKey);
+        chip.classList.toggle('done', activeIdx >= 0 && idx >= 0 && idx < activeIdx);
+      });
+      if (progress >= 1) {
+        coverStageChips.forEach((chip) => {
+          chip.classList.remove('active');
+          chip.classList.add('done');
+        });
+      }
+    }
+
     function setProgressVisible(show) {
       renderProgress.classList.toggle('show', Boolean(show));
       if (!show) {
         progressFill.style.width = '0%';
         progressCounter.textContent = '0 / 0';
         progressStage.textContent = 'Preparing generation...';
+        if (coverProgressFill) coverProgressFill.style.width = '0%';
+        if (coverProgressCounter) coverProgressCounter.textContent = '0 / 0';
+        if (coverProgressStage) coverProgressStage.textContent = 'Pipeline stage: idle';
+        updateCoverStageChips('', 0);
       }
     }
 
@@ -1459,10 +1601,14 @@
       const current = Number(job?.currentSlide || 0);
       const progress = Math.max(0, Math.min(1, Number(job?.progress || 0)));
       const stageRaw = String(job?.stage || 'working');
-      const stage = stageRaw.replaceAll('_', ' ');
+      const stage = stageLabelFromRaw(stageRaw);
       progressFill.style.width = `${Math.round(progress * 100)}%`;
       progressCounter.textContent = `${current} / ${total}`;
       progressStage.textContent = stage.charAt(0).toUpperCase() + stage.slice(1);
+      if (coverProgressFill) coverProgressFill.style.width = `${Math.round(progress * 100)}%`;
+      if (coverProgressCounter) coverProgressCounter.textContent = `${current} / ${total}`;
+      if (coverProgressStage) coverProgressStage.textContent = `Pipeline stage: ${stage}`;
+      updateCoverStageChips(stageKeyFromRaw(stageRaw), progress);
     }
 
     function normalizeIndexes(raw, maxLen) {

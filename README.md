@@ -7,6 +7,12 @@ The app generates editable Quarto Reveal.js slides, renders live previews, suppo
 ## Core Features
 
 - Prompt-to-deck generation for statistics lessons
+- Multi-stage GenAI pipeline for quality:
+  - `template_generation`
+  - `content_generation`
+  - `review_stage`
+  - `correction_stage`
+  - `rendering`
 - Source upload support (`.pdf`, `.pptx`, `.md`, `.txt`, images)
 - Human-in-the-loop refine workflow
 - Teaching style profiles:
@@ -15,9 +21,12 @@ The app generates editable Quarto Reveal.js slides, renders live previews, suppo
   - `mathematical`
   - `simulation`
 - Quarto `.qmd` output with live preview
+- Audience-facing slide language (no presenter coaching text in visible slide body)
+- Content structure emphasis per slide: definition, context, and student-useful materials
+- R-enabled simulation/plot slides (e.g., histogram, scatter, cluster plot) for concept illustration
 - In-app `.qmd` editing with re-render
 - Slide-level protection during refine (`approve` / `lock`)
-- Render progress tracking for long decks
+- Stage-aware progress tracking in workspace and cover page pipeline panel
 - Optional Google Slides export handshake endpoint
 
 ## Tech Stack
@@ -69,4 +78,3 @@ http://127.0.0.1:8000
 
 - Keep API keys in environment variables only.
 - Generated artifacts are stored under `.statedu/` and are git-ignored by default.
-

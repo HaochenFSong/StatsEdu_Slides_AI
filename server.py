@@ -22,6 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import unquote, urlparse
@@ -222,6 +223,7 @@ def sanitize_bullet_text(value: object) -> str:
         return ""
     text = re.sub(r"\s*\{[^}]*\}\s*$", "", text).strip()
     text = re.sub(r"^\s*[-+*]\s*", "", text).strip()
+    text = re.sub(r"^(definition|context|useful material|materials?)\s*:\s*", "", text, flags=re.IGNORECASE).strip()
     return text
 
 
@@ -255,11 +257,11 @@ def compose_student_bullets(
 ) -> list[str]:
     combined: list[str] = []
     if definition:
-        combined.append(f"Definition: {definition}")
+        combined.append(definition)
     if context:
-        combined.append(f"Context: {context}")
+        combined.append(context)
     for material in materials:
-        combined.append(f"Useful material: {material}")
+        combined.append(material)
     combined.extend(bullets)
 
     out: list[str] = []
@@ -618,7 +620,7 @@ def render_deck_incrementally(job_id: str, deck: dict[str, object]) -> dict[str,
         raise RuntimeError("No slides available to render.")
 
     total = len(slides)
-    update_job(job_id, totalSlides=total, stage="rendering")
+    update_job(job_id, totalSlides=total, stage="rendering", progress=0.90)
 
     final_deck = deck
     for idx in range(1, total + 1):
@@ -643,7 +645,7 @@ def render_deck_incrementally(job_id: str, deck: dict[str, object]) -> dict[str,
             stage=f"rendering_slide_{idx}",
             currentSlide=idx,
             totalSlides=total,
-            progress=round(idx / total, 4),
+            progress=round(0.90 + (idx / total) * 0.10, 4),
             deck=final_deck,
         )
         if idx < total and RENDER_STEP_DELAY_SEC > 0:
@@ -655,6 +657,13 @@ def render_deck_incrementally(job_id: str, deck: dict[str, object]) -> dict[str,
 def run_generation_job(job_id: str, deck_params: dict[str, object]) -> None:
     try:
         update_job(job_id, state="running", stage="generating", progress=0.05)
+        def progress_cb(stage: str, progress: float) -> None:
+            update_job(
+                job_id,
+                state="running",
+                stage=stage,
+                progress=max(0.0, min(0.9, float(progress))),
+            )
         raw_deck_id = deck_params.get("deck_id")
         deck_id = None
         if raw_deck_id is not None and str(raw_deck_id).strip():
@@ -674,6 +683,7 @@ def run_generation_job(job_id: str, deck_params: dict[str, object]) -> None:
             requested_slide_count=int(deck_params.get("requested_slide_count", 0) or 0) or None,
             render_now=False,
             deck_id=deck_id,
+            progress_cb=progress_cb,
         )
         if "sourceType" in deck_params:
             deck["sourceType"] = str(deck_params.get("sourceType", "none"))
@@ -823,12 +833,15 @@ def maybe_generate_with_llm(
     teaching_style: str,
     target_count: int,
     previous_slides: list[dict[str, object]] | None,
+    progress_cb: Callable[[str, float], None] | None = None,
 ) -> tuple[str, list[dict[str, object]], bool, str | None, str]:
     provider = resolve_llm_provider()
     model = resolve_llm_model(provider)
     fallback_title = infer_title(prompt)
 
     if provider in {"mock", "none", "off"}:
+        if progress_cb:
+            progress_cb("fallback_generation", 0.45)
         return (
             fallback_title,
             make_slide_sections(
@@ -861,6 +874,8 @@ def maybe_generate_with_llm(
     source_excerpt_short = source_excerpt[:7000] if source_excerpt else ""
     stage_warnings: list[str] = []
 
+    if progress_cb:
+        progress_cb("template_generation", 0.10)
     template_system = (
         "You are Agent 1: slide template planner for statistics education. "
         "Return strict JSON only with keys: title, template. "
@@ -888,6 +903,8 @@ def maybe_generate_with_llm(
     if not isinstance(template_slides, list) or len(template_slides) < 3:
         raise RuntimeError(f"{provider}/{model} template stage returned invalid template.")
 
+    if progress_cb:
+        progress_cb("content_generation", 0.35)
     content_system = (
         "You are Agent 2: content writer for statistics slides. "
         "Return strict JSON only with keys: title, slides. "
@@ -905,6 +922,7 @@ def maybe_generate_with_llm(
         "- Include definition, context, and useful materials for students on each teaching slide.\n"
         "- Keep bullets concise and grammatical.\n"
         "- Include at least one formula slide and one simulation/example slide.\n"
+        "- Include at least one plot-producing R chunk (e.g., hist/plot/boxplot/ggplot).\n"
         f"\nTemplate JSON:\n{json.dumps(template_slides, ensure_ascii=True)}\n"
     )
     if source_excerpt_short:
@@ -919,11 +937,14 @@ def maybe_generate_with_llm(
     if not isinstance(draft_slides, list) or len(draft_slides) < 3:
         raise RuntimeError(f"{provider}/{model} content stage returned too few slides.")
 
+    if progress_cb:
+        progress_cb("review_stage", 0.58)
     review_system = (
         "You are Agent 3: quality reviewer for statistics lecture slides. "
         "Return strict JSON only with keys: needsCorrection (boolean), issues (array), summary (string). "
         "Each issue must include: slideIndex (integer), severity (low|medium|high), problem (string), fix (string). "
-        "Review for correctness, clarity, and whether each slide has definition/context/student material value."
+        "Review for correctness, clarity, and whether each slide has definition/context/student material value. "
+        "Flag if there is no visible plotting code in any rChunk."
     )
     review_user = (
         f"Prompt:\n{prompt.strip()}\n\n"
@@ -939,6 +960,8 @@ def maybe_generate_with_llm(
     final_title = draft_title
     final_slides = draft_slides
     if needs_correction:
+        if progress_cb:
+            progress_cb("correction_stage", 0.72)
         correct_system = (
             "You are Agent 4: correction editor for slide decks. "
             "Return strict JSON only with keys: title, slides. "
@@ -962,6 +985,8 @@ def maybe_generate_with_llm(
         except Exception as exc:  # noqa: BLE001
             stage_warnings.append(f"Correction stage failed; kept draft ({exc}).")
 
+    if progress_cb:
+        progress_cb("finalizing", 0.86)
     title, sections = normalize_sections(
         final_title,
         final_slides,
@@ -981,6 +1006,8 @@ def maybe_generate_with_llm(
         sections = sections[:target_count] if target_count else sections
         return title, sections, False, f"{provider}/{model} pipeline returned too few slides; fallback applied.", provider
 
+    if progress_cb:
+        progress_cb("ready_for_render", 0.90)
     warning = "; ".join(stage_warnings) if stage_warnings else None
     return title, sections, True, warning, provider
 
@@ -996,12 +1023,10 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
         [
             "set.seed(1234)",
             "n <- 60",
-            "x <- rnorm(n, mean = 0, sd = 1)",
-            "x_bar <- mean(x)",
-            "s <- sd(x)",
-            "t_crit <- qt(0.975, df = n - 1)",
-            "ci <- x_bar + c(-1, 1) * t_crit * s / sqrt(n)",
-            "ci",
+            "xbar <- replicate(400, mean(rnorm(n, mean = 0, sd = 1)))",
+            "hist(xbar, breaks = 25, col = 'lightblue', main = 'Sampling Distribution of xbar', xlab = 'xbar')",
+            "abline(v = mean(xbar), col = 'red', lwd = 2)",
+            "mean(xbar)",
         ]
     )
     example_text = "Compute the estimate, construct the interval, and interpret it in context."
@@ -1011,12 +1036,16 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
         simulation_code = "\n".join(
             [
                 "set.seed(42)",
-                "n <- 80",
+                "n <- 40",
                 "mu0 <- 0",
-                "x <- rnorm(n, mean = 0.25, sd = 1)",
-                "z <- (mean(x) - mu0) / (sd(x) / sqrt(n))",
-                "p_value <- 2 * (1 - pnorm(abs(z)))",
-                "c(z_stat = z, p_value = p_value)",
+                "pvals <- replicate(500, {",
+                "  x <- rnorm(n, mean = mu0, sd = 1)",
+                "  z <- (mean(x) - mu0) / (sd(x) / sqrt(n))",
+                "  2 * (1 - pnorm(abs(z)))",
+                "})",
+                "hist(pvals, breaks = 25, col = 'lightgreen', main = 'P-value Distribution Under H0', xlab = 'p-value')",
+                "abline(v = 0.05, col = 'red', lwd = 2)",
+                "mean(pvals < 0.05)",
             ]
         )
         example_text = "State H0 and H1, compute test statistic, then make the decision."
@@ -1029,6 +1058,8 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 "x <- rnorm(n, 5, 2)",
                 "y <- 2 + 1.4 * x + rnorm(n, 0, 1.5)",
                 "fit <- lm(y ~ x)",
+                "plot(x, y, pch = 19, col = rgb(0, 0, 1, 0.35), main = 'Regression Simulation', xlab = 'x', ylab = 'y')",
+                "abline(fit, col = 'red', lwd = 2)",
                 "summary(fit)$coefficients",
             ]
         )
@@ -1042,6 +1073,8 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 "x2 <- matrix(rnorm(120, mean = 3, sd = 0.6), ncol = 2)",
                 "x <- rbind(x1, x2)",
                 "fit <- kmeans(x, centers = 2, nstart = 25)",
+                "plot(x, col = fit$cluster, pch = 19, main = 'K-means Cluster Assignment', xlab = 'Feature 1', ylab = 'Feature 2')",
+                "points(fit$centers, pch = 4, cex = 2.2, lwd = 2, col = 'black')",
                 "fit$tot.withinss",
             ]
         )
@@ -1053,6 +1086,8 @@ def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teach
                 "set.seed(99)",
                 "x <- rnorm(500, mean = 70, sd = 10)",
                 "z <- (x - mean(x)) / sd(x)",
+                "hist(x, prob = TRUE, breaks = 25, col = 'lavender', main = 'Normal Data Simulation', xlab = 'x')",
+                "curve(dnorm(x, mean = 70, sd = 10), add = TRUE, col = 'blue', lwd = 2)",
                 "summary(z)",
             ]
         )
@@ -1303,10 +1338,10 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
             r_chunk = "\n".join(
                 [
                     "set.seed(1234)",
-                    "n <- 80",
-                    "x <- rnorm(n)",
-                    "mean(x)",
-                    "sd(x)",
+                    "x <- rnorm(300)",
+                    "hist(x, breaks = 22, col = 'lightblue', main = 'Simulation Output', xlab = 'Value')",
+                    "abline(v = mean(x), col = 'red', lwd = 2)",
+                    "c(mean = mean(x), sd = sd(x))",
                 ]
             )
 
@@ -1511,6 +1546,7 @@ def create_deck(
     requested_slide_count: int | None = None,
     render_now: bool = True,
     deck_id: str | None = None,
+    progress_cb: Callable[[str, float], None] | None = None,
 ) -> dict[str, object]:
     fallback_title = infer_title(prompt)
     teaching_style = normalize_teaching_style(teaching_style)
@@ -1537,6 +1573,7 @@ def create_deck(
             teaching_style=teaching_style,
             target_count=requested_count,
             previous_slides=previous_slides,
+            progress_cb=progress_cb,
         )
     except Exception as exc:  # noqa: BLE001
         title = fallback_title
