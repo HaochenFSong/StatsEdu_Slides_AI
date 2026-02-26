@@ -11,21 +11,42 @@ Lightweight local server for:
 from __future__ import annotations
 
 import cgi
+import base64
+import html
+import io
 import json
 import os
 import re
+import socket
 import shutil
 import subprocess
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 from urllib import error as urlerror
 from urllib import request as urlrequest
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+
+
+def parse_optional_timeout(raw_value: str | None, default: float | None) -> float | None:
+    raw = str(raw_value or "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"none", "off", "false", "0", "infinite", "infinity", "unlimited"}:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return None
+    return value
+
 
 HOST = os.getenv("STATEDU_HOST", "127.0.0.1")
 PORT = int(os.getenv("STATEDU_PORT", "8000"))
@@ -35,20 +56,100 @@ DECK_DIR = DATA_DIR / "decks"
 UPLOAD_DIR = DATA_DIR / "uploads"
 
 SUPPORTED_TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".py", ".r", ".qmd"}
-LLM_TIMEOUT_SEC = int(os.getenv("STATEDU_LLM_TIMEOUT_SEC", "45"))
+LLM_TIMEOUT_SEC = parse_optional_timeout(os.getenv("STATEDU_LLM_TIMEOUT_SEC"), None)
+LLM_RETRY_COUNT = max(0, int(os.getenv("STATEDU_LLM_RETRY_COUNT", "1")))
+LLM_RETRY_BACKOFF_SEC = float(os.getenv("STATEDU_LLM_RETRY_BACKOFF_SEC", "1.2"))
 DEFAULT_SLIDE_COUNT = int(os.getenv("STATEDU_DEFAULT_SLIDE_COUNT", "8"))
 MAX_SLIDE_COUNT = int(os.getenv("STATEDU_MAX_SLIDE_COUNT", "40"))
 RENDER_STEP_DELAY_SEC = float(os.getenv("STATEDU_RENDER_STEP_DELAY_SEC", "0.35"))
 VALID_TEACHING_STYLES = {"balanced", "conceptual", "mathematical", "simulation"}
+WEB_RESEARCH_ENABLED = os.getenv("STATEDU_WEB_RESEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+WEB_RESEARCH_MAX_RESULTS = int(os.getenv("STATEDU_WEB_RESEARCH_MAX_RESULTS", "5"))
+WEB_RESEARCH_TIMEOUT_SEC = int(os.getenv("STATEDU_WEB_RESEARCH_TIMEOUT_SEC", "6"))
+IMAGE_GENERATION_ENABLED = os.getenv("STATEDU_IMAGE_GENERATION_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+IMAGE_PROVIDER = os.getenv("STATEDU_IMAGE_PROVIDER", "local").strip().lower()
+IMAGE_MAX_SLIDES = max(1, min(MAX_SLIDE_COUNT, int(os.getenv("STATEDU_IMAGE_MAX_SLIDES", "12"))))
+IMAGE_STYLE_PROMPT = os.getenv(
+    "STATEDU_IMAGE_STYLE_PROMPT",
+    "clean academic educational illustration, minimal, high readability, no text labels",
+).strip()
+OPENAI_IMAGE_MODEL = os.getenv("STATEDU_OPENAI_IMAGE_MODEL", "gpt-image-1").strip()
+OPENAI_IMAGE_SIZE = os.getenv("STATEDU_OPENAI_IMAGE_SIZE", "1536x1024").strip()
 
 MAX_SUBTITLE_CHARS = 120
-MAX_BULLET_CHARS = 118
+MAX_BULLET_CHARS = 150
 MAX_EXAMPLE_CHARS = 260
 MAX_ACTIVITY_CHARS = 220
 MAX_NOTES_CHARS = 170
 
 JOBS: dict[str, dict[str, object]] = {}
 JOBS_LOCK = threading.Lock()
+RESEARCH_IGNORE_PROMPT_TERMS = {
+    "slide",
+    "slides",
+    "lecture",
+    "lectures",
+    "student",
+    "students",
+    "class",
+    "classroom",
+    "undergraduate",
+    "intro",
+    "introduction",
+    "teach",
+    "teaching",
+    "example",
+    "examples",
+    "live",
+    "coding",
+}
+RESEARCH_STATS_ANCHORS = {
+    "statistics",
+    "statistical",
+    "probability",
+    "inference",
+    "hypothesis",
+    "p-value",
+    "confidence interval",
+    "regression",
+    "classification",
+    "clustering",
+    "cluster",
+    "k-means",
+    "kmeans",
+    "hierarchical clustering",
+    "silhouette",
+    "wcss",
+    "distance metric",
+    "euclidean",
+    "manhattan",
+    "standardization",
+    "z-score",
+    "dendrogram",
+    "sampling",
+    "distribution",
+    "variance",
+    "covariance",
+    "machine learning",
+    "unsupervised learning",
+    "data analysis",
+}
+RESEARCH_BIO_NOISE_TERMS = {
+    "musician",
+    "composer",
+    "artist",
+    "album",
+    "song",
+    "band",
+    "film",
+    "actor",
+    "actress",
+    "painter",
+    "painting",
+    "biography",
+    "born",
+    "died",
+}
 
 
 def ensure_dirs() -> None:
@@ -109,6 +210,344 @@ def llm_status() -> dict[str, object]:
         "model": resolve_llm_model(provider),
         "configured": configured,
     }
+
+
+def resolve_image_provider() -> str:
+    provider = IMAGE_PROVIDER or "local"
+    if provider in {"openai", "local", "none", "off"}:
+        return provider
+    return "local"
+
+
+def resolve_image_model(provider: str) -> str:
+    if provider == "openai":
+        return OPENAI_IMAGE_MODEL or "gpt-image-1"
+    if provider == "local":
+        return "local-svg"
+    return "none"
+
+
+def resolve_image_key(provider: str) -> str:
+    if provider == "openai":
+        return resolve_llm_key("openai")
+    return ""
+
+
+def image_status() -> dict[str, object]:
+    provider = resolve_image_provider()
+    configured = (not IMAGE_GENERATION_ENABLED) or provider in {"local", "none", "off"} or bool(resolve_image_key(provider))
+    return {
+        "enabled": IMAGE_GENERATION_ENABLED,
+        "provider": provider,
+        "model": resolve_image_model(provider),
+        "configured": configured,
+        "maxSlides": IMAGE_MAX_SLIDES,
+    }
+
+
+def fetch_json_url(url: str, timeout_sec: int) -> dict[str, object]:
+    req = urlrequest.Request(
+        url,
+        headers={
+            "User-Agent": "StatEduSlidesHelperAI/0.3 (+https://localhost)",
+            "Accept": "application/json, text/plain, */*",
+        },
+        method="GET",
+    )
+    with urlrequest.urlopen(req, timeout=timeout_sec) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+    parsed = json.loads(raw or "{}")
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Expected JSON object response.")
+    return parsed
+
+
+def clean_html_snippet(text: object, limit: int = 260) -> str:
+    value = str(text or "")
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = html.unescape(value)
+    value = re.sub(r"\s+", " ", value).strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3].rstrip(" ,;:") + "..."
+
+
+def tokenize_research_terms(text: str) -> set[str]:
+    words = re.findall(r"[a-zA-Z][a-zA-Z0-9\-]{2,}", str(text or "").lower())
+    return set(words)
+
+
+def is_research_item_relevant(*, prompt: str, title: str, snippet: str) -> bool:
+    prompt_tokens = tokenize_research_terms(prompt) - RESEARCH_IGNORE_PROMPT_TERMS
+    text = f"{title} {snippet}".lower()
+    text_tokens = tokenize_research_terms(text)
+
+    if any(anchor in text for anchor in RESEARCH_STATS_ANCHORS):
+        return True
+
+    overlap = prompt_tokens & text_tokens
+    if len(overlap) >= 2:
+        return True
+
+    bio_noise_hits = sum(1 for term in RESEARCH_BIO_NOISE_TERMS if term in text)
+    if bio_noise_hits >= 2:
+        return False
+
+    return False
+
+
+def normalize_source_url(raw: object) -> str:
+    text = str(raw or "").strip()
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+    return ""
+
+
+def source_domain(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:  # noqa: BLE001
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def add_research_item(
+    bucket: list[dict[str, str]],
+    seen: set[str],
+    *,
+    title: object,
+    url: object,
+    snippet: object,
+    provider: str,
+    limit: int,
+) -> None:
+    normalized_url = normalize_source_url(url)
+    normalized_title = sanitize_text(title)
+    normalized_snippet = clean_html_snippet(snippet)
+    if not normalized_url or not normalized_title:
+        return
+    key = normalized_url.lower()
+    if key in seen:
+        return
+    seen.add(key)
+    bucket.append(
+        {
+            "title": normalized_title,
+            "url": normalized_url,
+            "snippet": normalized_snippet,
+            "provider": provider,
+            "domain": source_domain(normalized_url),
+        }
+    )
+    if len(bucket) > limit:
+        del bucket[limit:]
+
+
+def build_web_queries(prompt: str, source_excerpt: str) -> list[str]:
+    prompt_short = re.sub(r"\s+", " ", prompt).strip()
+    prompt_short = prompt_short[:180]
+    source_seed = re.sub(r"\s+", " ", source_excerpt).strip()
+    source_seed = source_seed[:140]
+
+    queries = [
+        prompt_short,
+        f"{prompt_short} statistics explanation",
+        f"{prompt_short} classroom example",
+    ]
+    if source_seed:
+        queries.append(f"{prompt_short} {source_seed}")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in queries:
+        q = item.strip()
+        if not q:
+            continue
+        key = q.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(q)
+    return normalized[:4]
+
+
+def search_duckduckgo_instant(query: str, limit: int) -> list[dict[str, str]]:
+    url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_html=1&skip_disambig=1"
+    data = fetch_json_url(url, WEB_RESEARCH_TIMEOUT_SEC)
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    add_research_item(
+        results,
+        seen,
+        title=data.get("Heading", ""),
+        url=data.get("AbstractURL", ""),
+        snippet=data.get("AbstractText", ""),
+        provider="duckduckgo",
+        limit=limit,
+    )
+
+    related = data.get("RelatedTopics", [])
+    if isinstance(related, list):
+        for entry in related:
+            if len(results) >= limit:
+                break
+            if isinstance(entry, dict) and "Topics" in entry and isinstance(entry.get("Topics"), list):
+                for nested in entry.get("Topics", []):
+                    if len(results) >= limit:
+                        break
+                    if not isinstance(nested, dict):
+                        continue
+                    add_research_item(
+                        results,
+                        seen,
+                        title=nested.get("Text", ""),
+                        url=nested.get("FirstURL", ""),
+                        snippet=nested.get("Text", ""),
+                        provider="duckduckgo",
+                        limit=limit,
+                    )
+                continue
+            if not isinstance(entry, dict):
+                continue
+            add_research_item(
+                results,
+                seen,
+                title=entry.get("Text", ""),
+                url=entry.get("FirstURL", ""),
+                snippet=entry.get("Text", ""),
+                provider="duckduckgo",
+                limit=limit,
+            )
+    return results
+
+
+def search_wikipedia(query: str, limit: int) -> list[dict[str, str]]:
+    api_url = (
+        "https://en.wikipedia.org/w/api.php?"
+        f"action=query&list=search&format=json&utf8=1&srlimit={max(1, min(limit, 10))}&srsearch={quote_plus(query)}"
+    )
+    data = fetch_json_url(api_url, WEB_RESEARCH_TIMEOUT_SEC)
+    query_obj = data.get("query", {})
+    entries = query_obj.get("search", []) if isinstance(query_obj, dict) else []
+
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    if not isinstance(entries, list):
+        return results
+
+    for item in entries:
+        if len(results) >= limit:
+            break
+        if not isinstance(item, dict):
+            continue
+        title = sanitize_text(item.get("title", ""))
+        pageid = item.get("pageid")
+        snippet = clean_html_snippet(item.get("snippet", ""))
+        if not title or not pageid:
+            continue
+        url = f"https://en.wikipedia.org/?curid={pageid}"
+        add_research_item(
+            results,
+            seen,
+            title=title,
+            url=url,
+            snippet=snippet,
+            provider="wikipedia",
+            limit=limit,
+        )
+    return results
+
+
+def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> tuple[list[dict[str, str]], str | None]:
+    if not WEB_RESEARCH_ENABLED:
+        return [], None
+    limit = max(1, min(max_results, 10))
+    queries = build_web_queries(prompt, source_excerpt)
+    if not queries:
+        return [], None
+
+    aggregated: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    warnings: list[str] = []
+    failures = 0
+
+    for query in queries:
+        if len(aggregated) >= limit:
+            break
+        try:
+            ddg_results = search_duckduckgo_instant(query, limit=limit)
+            for item in ddg_results:
+                url = item.get("url", "")
+                title = str(item.get("title", ""))
+                snippet = str(item.get("snippet", ""))
+                if not url or url in seen_urls:
+                    continue
+                if not is_research_item_relevant(prompt=prompt, title=title, snippet=snippet):
+                    continue
+                seen_urls.add(url)
+                aggregated.append(item)
+                if len(aggregated) >= limit:
+                    break
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"duckduckgo: {exc}")
+            failures += 1
+            if failures >= 2 and not aggregated:
+                break
+
+    if len(aggregated) < limit:
+        for query in queries:
+            if len(aggregated) >= limit:
+                break
+            try:
+                wiki_results = search_wikipedia(query, limit=limit)
+                for item in wiki_results:
+                    url = item.get("url", "")
+                    title = str(item.get("title", ""))
+                    snippet = str(item.get("snippet", ""))
+                    if not url or url in seen_urls:
+                        continue
+                    if not is_research_item_relevant(prompt=prompt, title=title, snippet=snippet):
+                        continue
+                    seen_urls.add(url)
+                    aggregated.append(item)
+                    if len(aggregated) >= limit:
+                        break
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"wikipedia: {exc}")
+                failures += 1
+                if failures >= 4 and not aggregated:
+                    break
+
+    warning = None
+    if not aggregated and warnings:
+        warning = "Web research unavailable in this environment; continued with prompt/source only."
+    return aggregated[:limit], warning
+
+
+def format_research_context(results: list[dict[str, str]]) -> str:
+    if not results:
+        return ""
+    lines: list[str] = []
+    for idx, item in enumerate(results, start=1):
+        title = sanitize_text(item.get("title", ""))
+        domain = sanitize_text(item.get("domain", ""))
+        url = normalize_source_url(item.get("url", ""))
+        snippet = clean_html_snippet(item.get("snippet", ""))
+        if not title or not url:
+            continue
+        label = f"{idx}. {title}"
+        if domain:
+            label += f" ({domain})"
+        lines.append(label)
+        if snippet:
+            lines.append(f"   Summary: {snippet}")
+        lines.append(f"   Link: {url}")
+    return "\n".join(lines)
 
 
 def now_iso() -> str:
@@ -176,12 +615,65 @@ def normalize_teaching_style(raw: object) -> str:
     return "balanced"
 
 
+def sentence_completion_boundary(text: str, preferred_max: int, extra_window: int = 120) -> int | None:
+    if not text:
+        return None
+    upper = min(len(text), preferred_max + max(20, extra_window))
+    if upper <= preferred_max:
+        return None
+    segment = text[preferred_max:upper]
+    match = re.search(r"[.!?](?:\s|$)", segment)
+    if not match:
+        return None
+    return preferred_max + match.end()
+
+
 def clamp_sentence(text: object, max_chars: int) -> str:
     value = sanitize_text(text)
     if len(value) <= max_chars:
         return value
-    trimmed = value[: max_chars - 3].rstrip(" ,;:")
-    return f"{trimmed}..."
+
+    completion_idx = sentence_completion_boundary(value, max_chars, extra_window=120)
+    if completion_idx is not None and completion_idx <= len(value):
+        completed = value[:completion_idx].strip()
+        if completed:
+            return completed
+
+    min_keep = max(20, int(max_chars * 0.55))
+
+    punct_positions = [m.end() for m in re.finditer(r"[.!?;:]", value) if m.end() <= max_chars]
+    punct_positions = [p for p in punct_positions if p >= min_keep]
+    if punct_positions:
+        candidate = value[: punct_positions[-1]].strip()
+        candidate = candidate.rstrip(";:").strip()
+        return candidate or value[: punct_positions[-1]].strip()
+
+    comma_positions = [m.start() for m in re.finditer(r",", value) if m.start() <= max_chars]
+    comma_positions = [p for p in comma_positions if p >= min_keep]
+    if comma_positions:
+        candidate = value[: comma_positions[-1]].rstrip(" ,;:-").strip()
+        if candidate:
+            if candidate[-1:] not in ".!?":
+                candidate += "."
+            return candidate
+
+    clipped = value[:max_chars].rstrip(" ,;:-")
+    if " " in clipped:
+        clipped = clipped.rsplit(" ", 1)[0].rstrip(" ,;:-")
+    clipped = re.sub(
+        r"\b(of|to|for|with|by|from|and|or|that|which|when|where|while|as|in|on|at|into|about|using|based)\s*$",
+        "",
+        clipped,
+        flags=re.IGNORECASE,
+    ).strip()
+    if clipped:
+        if clipped[-1:] not in ".!?":
+            clipped += "."
+        return clipped
+    fallback = value[:max_chars].strip()
+    if fallback and fallback[-1:] not in ".!?":
+        fallback += "."
+    return fallback
 
 
 def is_unhelpful_source_sentence(text: str) -> bool:
@@ -224,6 +716,8 @@ def sanitize_bullet_text(value: object) -> str:
     text = re.sub(r"\s*\{[^}]*\}\s*$", "", text).strip()
     text = re.sub(r"^\s*[-+*]\s*", "", text).strip()
     text = re.sub(r"^(definition|context|useful material|materials?)\s*:\s*", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\.{3,}", ".", text).strip()
+    text = re.sub(r"\.{3,}\s*$", "", text).strip()
     return text
 
 
@@ -328,6 +822,101 @@ def sanitize_r_chunk(code: str, label: str) -> str:
     return cleaned
 
 
+def normalize_equation_tokens(expr: str) -> str:
+    out = str(expr or "")
+    replacements = {
+        "∑": r"\sum",
+        "μ": r"\mu",
+        "σ": r"\sigma",
+        "β": r"\beta",
+        "α": r"\alpha",
+        "γ": r"\gamma",
+        "λ": r"\lambda",
+        "≤": r"\le",
+        "≥": r"\ge",
+        "≠": r"\ne",
+        "∞": r"\infty",
+        "∈": r"\in",
+        "−": "-",
+        "–": "-",
+        "×": r"\times",
+    }
+    for src, dst in replacements.items():
+        out = out.replace(src, dst)
+    out = re.sub(r"\|\|\s*([^|]+?)\s*\|\|", r"\\lVert \1 \\rVert", out)
+    out = re.sub(r"\bargmin\b", r"\\arg\\min", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out
+
+
+def is_formula_like_line(line: str) -> bool:
+    low = str(line or "").lower()
+    if not low:
+        return False
+    strong_markers = [
+        r"\sum",
+        r"\frac",
+        r"\mu",
+        r"\sigma",
+        r"\alpha",
+        r"\beta",
+        r"\gamma",
+        r"\lVert",
+        r"\arg\min",
+        "=",
+        "^",
+        "_",
+    ]
+    return any(marker in low for marker in strong_markers)
+
+
+def parse_equation_payload(raw_equation: str) -> tuple[list[str], list[str]]:
+    raw = str(raw_equation or "").strip()
+    if not raw:
+        return [], []
+
+    text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"^\$\$\s*", "", text)
+    text = re.sub(r"\s*\$\$$", "", text)
+
+    formula_steps: list[str] = []
+    notes: list[str] = []
+
+    inline_math = re.findall(r"\\\((.+?)\\\)", text)
+    for segment in inline_math:
+        normalized = normalize_equation_tokens(segment)
+        if normalized and normalized not in formula_steps:
+            formula_steps.append(normalized)
+    text_no_inline = re.sub(r"\\\(.+?\\\)", " ", text)
+
+    for raw_line in text_no_inline.split("\n"):
+        line = sanitize_text(raw_line)
+        line = re.sub(r"^\d+\)\s*", "", line).strip()
+        if not line:
+            continue
+        line_low = line.lower()
+        if line_low.startswith("algorithm steps") or line_low.startswith("minimize over assignments"):
+            notes.append(line)
+            continue
+        if ":" in line:
+            prefix, suffix = line.split(":", 1)
+            if suffix.strip() and is_formula_like_line(normalize_equation_tokens(suffix)) and not is_formula_like_line(normalize_equation_tokens(prefix)):
+                line = suffix.strip()
+        normalized = normalize_equation_tokens(line)
+        if is_formula_like_line(normalized):
+            if normalized not in formula_steps:
+                formula_steps.append(normalized)
+        else:
+            notes.append(line)
+
+    cleaned_steps: list[str] = []
+    for step in formula_steps:
+        trimmed = step.strip().strip(",;:")
+        if trimmed:
+            cleaned_steps.append(trimmed)
+    return cleaned_steps, notes
+
+
 def extract_json_object(text: str) -> dict[str, object]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -386,6 +975,7 @@ def normalize_sections(raw_title: str, raw_slides: object, fallback_title: str, 
             equation = str(item.get("equation", "")).strip()
             notes = clamp_sentence(item.get("notes", ""), MAX_NOTES_CHARS)
             r_chunk = str(item.get("rChunk", "")).strip()
+            figure_path = str(item.get("figurePath", "")).strip()
             if is_unhelpful_source_sentence(notes):
                 notes = ""
             if is_presenter_directive(notes):
@@ -412,6 +1002,7 @@ def normalize_sections(raw_title: str, raw_slides: object, fallback_title: str, 
                     "equation": equation,
                     "notes": notes,
                     "rChunk": r_chunk,
+                    "figurePath": figure_path,
                 }
             )
 
@@ -453,6 +1044,7 @@ def normalize_slide_obj(raw: object, idx: int) -> dict[str, object]:
             "equation": "",
             "notes": "",
             "rChunk": "",
+            "figurePath": "",
         }
 
     title = sanitize_text(raw.get("title", "")) or f"Slide {idx + 1}"
@@ -468,6 +1060,7 @@ def normalize_slide_obj(raw: object, idx: int) -> dict[str, object]:
     equation = str(raw.get("equation", "")).strip()
     notes = clamp_sentence(raw.get("notes", ""), MAX_NOTES_CHARS)
     r_chunk = str(raw.get("rChunk", "")).strip()
+    figure_path = str(raw.get("figurePath", "")).strip()
     bullets_raw = raw.get("bullets", [])
     bullets: list[str] = []
     if isinstance(bullets_raw, list):
@@ -496,7 +1089,75 @@ def normalize_slide_obj(raw: object, idx: int) -> dict[str, object]:
         "equation": equation,
         "notes": notes,
         "rChunk": r_chunk,
+        "figurePath": figure_path,
     }
+
+
+def fallback_slide_from_template(
+    deck_title: str,
+    template_slide: dict[str, object] | object,
+    slide_idx: int,
+) -> dict[str, object]:
+    if isinstance(template_slide, dict):
+        template_title = sanitize_text(template_slide.get("title", ""))
+        template_layout = sanitize_text(template_slide.get("layout", "concept")).lower()
+        purpose = sanitize_text(template_slide.get("purpose", ""))
+    else:
+        template_title = ""
+        template_layout = "concept"
+        purpose = ""
+
+    layout = template_layout if template_layout in {"title", "concept", "formula", "simulation", "example", "activity", "summary"} else "concept"
+    title = template_title or f"{deck_title}: Part {slide_idx + 1}"
+    subtitle = purpose or "StatEdu generated teaching slide"
+    seed = f"{deck_title}\n{title}\n{purpose}"
+    bullets = infer_bullets(seed)[:4]
+
+    definition = ""
+    context = ""
+    equation = ""
+    example = ""
+    activity = ""
+    r_chunk = ""
+    if layout == "formula":
+        definition = "This formula summarizes how the method quantifies fit or evidence."
+        context = "Interpret symbols before using the formula in a worked example."
+        equation = r"\text{Metric}=\sum_{i=1}^{n}(\text{observed}_i-\text{model}_i)^2"
+    elif layout == "simulation":
+        definition = "Simulation approximates repeated sampling behavior under clear assumptions."
+        context = "Use simulation to build intuition before formal derivations."
+        r_chunk = base_r_fallback_chunk(title)
+    elif layout == "activity":
+        definition = "Activity asks students to make a statistical decision and justify it."
+        context = "Use pair discussion, then compare reasoning across groups."
+        activity = "Mini activity: compute one value, interpret it, and defend your choice."
+    elif layout == "example":
+        definition = "Worked example translates a word problem into a statistical workflow."
+        context = "Show setup, calculation, and interpretation in one coherent sequence."
+        example = "Walk through one concrete example step-by-step and interpret the result."
+    elif layout == "summary":
+        definition = "Summary consolidates key definitions, assumptions, and decisions."
+        context = "End with one short check-for-understanding prompt."
+    else:
+        definition = "State the core concept in plain language first."
+        context = "Connect the concept to one realistic data-analysis scenario."
+
+    return normalize_slide_obj(
+        {
+            "title": title,
+            "subtitle": subtitle,
+            "layout": layout,
+            "bullets": bullets,
+            "definition": definition,
+            "context": context,
+            "studentMaterials": ["One-page checklist", "Worked example prompt"],
+            "equation": equation,
+            "example": example,
+            "activity": activity,
+            "rChunk": r_chunk,
+        },
+        slide_idx,
+    )
 
 
 def align_slide_count(
@@ -597,7 +1258,10 @@ def parse_qmd_title_and_slides(qmd: str, fallback_title: str) -> tuple[str, list
     heading_matches = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", body))
     slides: list[dict[str, object]] = []
     for i, m_h2 in enumerate(heading_matches):
-        slide_title = m_h2.group(1).strip()
+        slide_title_raw = m_h2.group(1).strip()
+        slide_title = re.sub(r"\s+\{[^{}]*\}\s*$", "", slide_title_raw).strip()
+        m_bg = re.search(r'background-image="([^"]+)"', slide_title_raw)
+        figure_path = m_bg.group(1).strip() if m_bg else ""
         start = m_h2.end()
         end = heading_matches[i + 1].start() if i + 1 < len(heading_matches) else len(body)
         block = body[start:end].strip()
@@ -658,6 +1322,7 @@ def parse_qmd_title_and_slides(qmd: str, fallback_title: str) -> tuple[str, list
                     "equation": equation,
                     "notes": notes,
                     "rChunk": "\n".join(r_lines).strip(),
+                    "figurePath": figure_path,
                 },
                 i,
             )
@@ -708,14 +1373,40 @@ def render_deck_incrementally(job_id: str, deck: dict[str, object]) -> dict[str,
 
 def run_generation_job(job_id: str, deck_params: dict[str, object]) -> None:
     try:
-        update_job(job_id, state="running", stage="generating", progress=0.05)
+        requested_raw = int(deck_params.get("requested_slide_count", 0) or 0)
+        if requested_raw > 0:
+            estimated_total = clamp_slide_count(requested_raw)
+        else:
+            prev_slides = deck_params.get("previous_slides", None)
+            if isinstance(prev_slides, list) and prev_slides:
+                estimated_total = clamp_slide_count(len(prev_slides))
+            else:
+                estimated_total = infer_slide_count(str(deck_params.get("prompt", "")))
+
+        update_job(job_id, state="running", stage="generating", progress=0.05, totalSlides=estimated_total, currentSlide=0)
+
         def progress_cb(stage: str, progress: float) -> None:
-            update_job(
-                job_id,
-                state="running",
-                stage=stage,
-                progress=max(0.0, min(0.9, float(progress))),
-            )
+            updates: dict[str, object] = {
+                "state": "running",
+                "stage": stage,
+                "progress": max(0.0, min(0.9, float(progress))),
+                "totalSlides": estimated_total,
+            }
+            if str(stage).startswith("content_slide_"):
+                try:
+                    idx = int(str(stage).replace("content_slide_", ""))
+                except ValueError:
+                    idx = 0
+                if idx > 0:
+                    updates["currentSlide"] = min(idx, estimated_total)
+            if str(stage).startswith("image_slide_"):
+                try:
+                    idx = int(str(stage).replace("image_slide_", ""))
+                except ValueError:
+                    idx = 0
+                if idx > 0:
+                    updates["currentSlide"] = min(idx, estimated_total)
+            update_job(job_id, **updates)
         raw_deck_id = deck_params.get("deck_id")
         deck_id = None
         if raw_deck_id is not None and str(raw_deck_id).strip():
@@ -760,19 +1451,37 @@ def post_json(url: str, payload: dict[str, object], headers: dict[str, str] | No
     if headers:
         req_headers.update(headers)
 
-    req = urlrequest.Request(url, data=body, headers=req_headers, method="POST")
-    try:
-        with urlrequest.urlopen(req, timeout=LLM_TIMEOUT_SEC) as resp:
-            raw = resp.read().decode("utf-8", errors="ignore")
-            parsed = json.loads(raw or "{}")
-            if not isinstance(parsed, dict):
-                raise RuntimeError("Non-object JSON response from model API.")
-            return parsed
-    except urlerror.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"LLM HTTP {exc.code}: {detail[:300]}") from exc
-    except urlerror.URLError as exc:
-        raise RuntimeError(f"LLM network error: {exc}") from exc
+    max_attempts = 1 + max(0, int(LLM_RETRY_COUNT))
+    last_error: Exception | None = None
+    for attempt in range(max_attempts):
+        req = urlrequest.Request(url, data=body, headers=req_headers, method="POST")
+        try:
+            if LLM_TIMEOUT_SEC is None:
+                resp_ctx = urlrequest.urlopen(req)
+            else:
+                resp_ctx = urlrequest.urlopen(req, timeout=LLM_TIMEOUT_SEC)
+            with resp_ctx as resp:
+                raw = resp.read().decode("utf-8", errors="ignore")
+                parsed = json.loads(raw or "{}")
+                if not isinstance(parsed, dict):
+                    raise RuntimeError("Non-object JSON response from model API.")
+                return parsed
+        except urlerror.HTTPError as exc:
+            last_error = exc
+            detail = exc.read().decode("utf-8", errors="ignore")
+            retriable = exc.code in {408, 409, 425, 429, 500, 502, 503, 504}
+            if retriable and attempt < max_attempts - 1:
+                time.sleep(max(0.1, LLM_RETRY_BACKOFF_SEC) * (attempt + 1))
+                continue
+            raise RuntimeError(f"LLM HTTP {exc.code}: {detail[:300]}") from exc
+        except (urlerror.URLError, TimeoutError, socket.timeout) as exc:
+            last_error = exc
+            if attempt < max_attempts - 1:
+                time.sleep(max(0.1, LLM_RETRY_BACKOFF_SEC) * (attempt + 1))
+                continue
+            raise RuntimeError(f"LLM network error: {exc}") from exc
+
+    raise RuntimeError(f"LLM request failed after {max_attempts} attempt(s): {last_error}")
 
 
 def call_openai_json(system_prompt: str, user_prompt: str) -> dict[str, object]:
@@ -886,25 +1595,39 @@ def maybe_generate_with_llm(
     target_count: int,
     previous_slides: list[dict[str, object]] | None,
     progress_cb: Callable[[str, float], None] | None = None,
-) -> tuple[str, list[dict[str, object]], bool, str | None, str]:
+) -> tuple[str, list[dict[str, object]], bool, str | None, str, list[dict[str, str]]]:
     provider = resolve_llm_provider()
     model = resolve_llm_model(provider)
     fallback_title = infer_title(prompt)
+    source_excerpt_short = source_excerpt[:7000] if source_excerpt else ""
+    stage_warnings: list[str] = []
+
+    if progress_cb:
+        progress_cb("web_research", 0.12)
+    web_research, research_warning = collect_web_research(prompt, source_excerpt_short, WEB_RESEARCH_MAX_RESULTS)
+    research_context = format_research_context(web_research)
+    if research_warning:
+        stage_warnings.append(research_warning)
 
     if provider in {"mock", "none", "off"}:
         if progress_cb:
             progress_cb("fallback_generation", 0.45)
+        merged_excerpt = source_excerpt
+        if research_context:
+            merged_excerpt = (merged_excerpt + "\n\nOnline research notes:\n" + research_context).strip()
+        warning = "; ".join(stage_warnings) if stage_warnings else None
         return (
             fallback_title,
             make_slide_sections(
                 fallback_title,
                 prompt + "\n" + feedback,
-                source_excerpt,
+                merged_excerpt,
                 teaching_style=teaching_style,
             ),
             False,
-            None,
+            warning,
             provider,
+            web_research,
         )
 
     previous_context = ""
@@ -923,11 +1646,8 @@ def maybe_generate_with_llm(
                 )
         previous_context = json.dumps(slim, ensure_ascii=True)
 
-    source_excerpt_short = source_excerpt[:7000] if source_excerpt else ""
-    stage_warnings: list[str] = []
-
     if progress_cb:
-        progress_cb("template_generation", 0.10)
+        progress_cb("template_generation", 0.24)
     template_system = (
         "You are Agent 1: slide template planner for statistics education. "
         "Return strict JSON only with keys: title, template. "
@@ -943,6 +1663,11 @@ def maybe_generate_with_llm(
         f"Output format target: {output_format}\n"
         "Audience: undergraduate statistics learners unless specified otherwise.\n"
     )
+    if research_context:
+        template_user += (
+            "\nWeb research context (use this to plan a stronger progression and examples):\n"
+            f"{research_context}\n"
+        )
     if feedback:
         template_user += f"\nRefinement feedback:\n{feedback}\n"
     if previous_context:
@@ -955,48 +1680,98 @@ def maybe_generate_with_llm(
     if not isinstance(template_slides, list) or len(template_slides) < 3:
         raise RuntimeError(f"{provider}/{model} template stage returned invalid template.")
 
+    if target_count:
+        template_slides = template_slides[:target_count]
+    template_count = len(template_slides)
+    if template_count < 3:
+        raise RuntimeError(f"{provider}/{model} template stage produced too few slides after count alignment.")
+
     if progress_cb:
-        progress_cb("content_generation", 0.35)
-    content_system = (
-        "You are Agent 2: content writer for statistics slides. "
-        "Return strict JSON only with keys: title, slides. "
-        "slides must be an array with same length/order as template. "
-        "Each slide object must include: title, subtitle, layout, bullets (2-6), "
+        progress_cb("content_generation", 0.30)
+
+    slide_system = (
+        "You are Agent 2: single-slide writer for statistics education. "
+        "Generate exactly one slide at a time. "
+        "Return strict JSON only with key: slide. "
+        "slide must be an object with keys: title, subtitle, layout, bullets (2-6), "
         "definition (string), context (string), studentMaterials (array of 1-3 strings), "
         "example (optional), activity (optional), equation (optional), rChunk (optional). "
         "Audience-facing slide copy only. No presenter coaching language. "
+        "Do not write label prefixes like 'Definition:'/'Context:'/'Useful material:' inside bullets. "
+        "Avoid ellipses and unfinished clauses; all bullet items must be complete sentences. "
+        "For equation field, provide pure math expressions only (no prose inside equations). "
+        "Do not add unrelated anecdotes or pop-culture references unless user explicitly asks. "
         "Use base R only in rChunk (no library()/require(), no tidyverse/ggplot dependencies)."
     )
-    content_user = (
-        f"Prompt:\n{prompt.strip()}\n\n"
-        f"Teaching style: {teaching_style}\n"
-        f"Animation: {animation}\n"
-        "Quality requirements:\n"
-        "- Include definition, context, and useful materials for students on each teaching slide.\n"
-        "- Keep bullets concise and grammatical.\n"
-        "- Include at least one formula slide and one simulation/example slide.\n"
-        "- Include at least one plot-producing R chunk (e.g., hist/plot/boxplot/ggplot).\n"
-        f"\nTemplate JSON:\n{json.dumps(template_slides, ensure_ascii=True)}\n"
-    )
-    if source_excerpt_short:
-        content_user += f"\nSource excerpt:\n{source_excerpt_short}\n"
-    if feedback:
-        content_user += f"\nRefinement feedback:\n{feedback}\n"
-    content_user += "\nReturn JSON only."
 
-    content_raw = call_provider_json(provider, content_system, content_user)
-    draft_title = sanitize_text(content_raw.get("title", "")) or template_title
-    draft_slides = content_raw.get("slides", [])
-    if not isinstance(draft_slides, list) or len(draft_slides) < 3:
-        raise RuntimeError(f"{provider}/{model} content stage returned too few slides.")
+    generated_slides: list[dict[str, object]] = []
+    for idx, template_slide in enumerate(template_slides, start=1):
+        if progress_cb:
+            content_progress = 0.30 + (idx / template_count) * 0.28
+            progress_cb(f"content_slide_{idx}", round(content_progress, 4))
+
+        recent_context = []
+        for prev_slide in generated_slides[-3:]:
+            if isinstance(prev_slide, dict):
+                recent_context.append(
+                    {
+                        "title": str(prev_slide.get("title", "")),
+                        "layout": str(prev_slide.get("layout", "concept")),
+                        "bullets": list(prev_slide.get("bullets", []))[:3],
+                    }
+                )
+        slide_user = (
+            f"Deck prompt:\n{prompt.strip()}\n\n"
+            f"Deck title:\n{template_title}\n"
+            f"Teaching style: {teaching_style}\n"
+            f"Animation: {animation}\n"
+            f"Slide number: {idx} of {template_count}\n"
+            f"Template slide spec:\n{json.dumps(template_slide, ensure_ascii=True)}\n"
+            f"Recent generated slides context:\n{json.dumps(recent_context, ensure_ascii=True)}\n"
+            "Slide quality requirements:\n"
+            "- Include definition, context, and useful student materials when pedagogically appropriate.\n"
+            "- Keep bullets concise, grammatical, and readable on a projected slide.\n"
+            "- Prefer complete statements over fragments.\n"
+            "- End each bullet with proper punctuation.\n"
+            "- For simulation/formula slides, include concrete statistical value.\n"
+            "- Never output literal labels like 'Useful material:' in the visible bullet text.\n"
+            "- Do not use ellipses (...); use full statements.\n"
+        )
+        if research_context:
+            slide_user += (
+                "\nWeb research facts to incorporate only if relevant:\n"
+                f"{research_context}\n"
+            )
+        if source_excerpt_short:
+            slide_user += f"\nSource excerpt:\n{source_excerpt_short}\n"
+        if feedback:
+            slide_user += f"\nRefinement feedback:\n{feedback}\n"
+        if previous_context:
+            slide_user += f"\nPrior deck context:\n{previous_context}\n"
+        slide_user += "\nReturn JSON only."
+
+        try:
+            slide_raw = call_provider_json(provider, slide_system, slide_user)
+            raw_slide_obj = slide_raw.get("slide", slide_raw)
+            if not isinstance(raw_slide_obj, dict):
+                raise RuntimeError("single-slide stage returned non-object slide")
+            generated_slides.append(raw_slide_obj)
+        except Exception as exc:  # noqa: BLE001
+            stage_warnings.append(f"Slide {idx} fallback used ({sanitize_text(str(exc))[:140]}).")
+            generated_slides.append(fallback_slide_from_template(template_title, template_slide, idx - 1))
+
+    draft_title = template_title
+    draft_slides = generated_slides
 
     if progress_cb:
-        progress_cb("review_stage", 0.58)
+        progress_cb("review_stage", 0.64)
     review_system = (
         "You are Agent 3: quality reviewer for statistics lecture slides. "
         "Return strict JSON only with keys: needsCorrection (boolean), issues (array), summary (string). "
         "Each issue must include: slideIndex (integer), severity (low|medium|high), problem (string), fix (string). "
         "Review for correctness, clarity, and whether each slide has definition/context/student material value. "
+        "Flag irrelevant anecdotes or references unrelated to statistics learning goals. "
+        "Flag incomplete/truncated sentence endings, ellipses, and any visible label-style bullet text. "
         "Flag if there is no visible plotting code in any rChunk."
     )
     review_user = (
@@ -1005,19 +1780,61 @@ def maybe_generate_with_llm(
         f"Slides draft JSON:\n{json.dumps(draft_slides, ensure_ascii=True)}\n"
         "\nReturn JSON only."
     )
+    if research_context:
+        review_user += f"\nCheck alignment with these research notes when relevant:\n{research_context}\n"
     review_raw = call_provider_json(provider, review_system, review_user)
-    issues_raw = review_raw.get("issues", [])
-    issues = issues_raw if isinstance(issues_raw, list) else []
-    needs_correction = bool(review_raw.get("needsCorrection", False)) or len(issues) > 0
+    review_issues_raw = review_raw.get("issues", [])
+    review_issues = review_issues_raw if isinstance(review_issues_raw, list) else []
+
+    fact_issues: list[object] = []
+    fact_needs_correction = False
+    if progress_cb:
+        progress_cb("fact_check_stage", 0.72)
+    fact_system = (
+        "You are Agent 3B: fact-checker for statistics slides. "
+        "Return strict JSON only with keys: needsCorrection (boolean), issues (array), summary (string). "
+        "Each issue must include: slideIndex (integer), severity (low|medium|high), problem (string), fix (string). "
+        "Check statistical correctness, formula meaning, interpretation accuracy, and whether claims overstate conclusions. "
+        "If no factual problems, return needsCorrection false and empty issues."
+    )
+    fact_user = (
+        f"Prompt:\n{prompt.strip()}\n\n"
+        f"Slides draft JSON:\n{json.dumps(draft_slides, ensure_ascii=True)}\n"
+    )
+    if research_context:
+        fact_user += f"\nReference context:\n{research_context}\n"
+    if source_excerpt_short:
+        fact_user += f"\nSource excerpt:\n{source_excerpt_short}\n"
+    fact_user += "\nReturn JSON only."
+    try:
+        fact_raw = call_provider_json(provider, fact_system, fact_user)
+        fact_needs_correction = bool(fact_raw.get("needsCorrection", False))
+        fact_issues_raw = fact_raw.get("issues", [])
+        if isinstance(fact_issues_raw, list):
+            fact_issues = fact_issues_raw
+    except Exception as exc:  # noqa: BLE001
+        stage_warnings.append(f"Fact-check stage failed ({sanitize_text(str(exc))[:140]}).")
+
+    issues: list[dict[str, object]] = []
+    for issue in [*review_issues, *fact_issues]:
+        if isinstance(issue, dict):
+            issues.append(issue)
+    needs_correction = (
+        bool(review_raw.get("needsCorrection", False))
+        or fact_needs_correction
+        or (len(issues) > 0)
+    )
 
     final_title = draft_title
     final_slides = draft_slides
     if needs_correction:
         if progress_cb:
-            progress_cb("correction_stage", 0.72)
+            progress_cb("correction_stage", 0.80)
         correct_system = (
             "You are Agent 4: correction editor for slide decks. "
             "Return strict JSON only with keys: title, slides. "
+            "Fix incomplete sentences, remove ellipses, and keep equation fields as math-only expressions. "
+            "Remove label prefixes like 'Definition:'/'Context:'/'Useful material:' from bullets. "
             "Apply reviewer issues while preserving narrative flow and slide count."
         )
         correct_user = (
@@ -1026,6 +1843,8 @@ def maybe_generate_with_llm(
             f"\nDraft slides:\n{json.dumps(draft_slides, ensure_ascii=True)}\n"
             "\nReturn corrected JSON only."
         )
+        if research_context:
+            correct_user += f"\nResearch notes:\n{research_context}\n"
         try:
             corrected_raw = call_provider_json(provider, correct_system, correct_user)
             corrected_title = sanitize_text(corrected_raw.get("title", "")) or draft_title
@@ -1057,12 +1876,19 @@ def maybe_generate_with_llm(
             teaching_style=teaching_style,
         )
         sections = sections[:target_count] if target_count else sections
-        return title, sections, False, f"{provider}/{model} pipeline returned too few slides; fallback applied.", provider
+        return (
+            title,
+            sections,
+            False,
+            f"{provider}/{model} pipeline returned too few slides; fallback applied.",
+            provider,
+            web_research,
+        )
 
     if progress_cb:
         progress_cb("ready_for_render", 0.90)
     warning = "; ".join(stage_warnings) if stage_warnings else None
-    return title, sections, True, warning, provider
+    return title, sections, True, warning, provider, web_research
 
 
 def make_slide_sections(title: str, prompt: str, source_excerpt: str = "", teaching_style: str = "balanced") -> list[dict[str, object]]:
@@ -1358,16 +2184,22 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
             if txt:
                 lines.append(f"- {txt}")
 
-    def append_equation(eq: str) -> None:
-        expr = str(eq or "").strip()
-        if not expr:
-            return
-        if expr.startswith("$$") and expr.endswith("$$"):
-            lines.append(expr)
-            return
-        lines.append("$$")
-        lines.append(expr)
-        lines.append("$$")
+    def append_equation(eq: str) -> list[str]:
+        steps, eq_notes = parse_equation_payload(eq)
+        if not steps:
+            return []
+        if animation in {"step", "fade"} and len(steps) > 1:
+            for step in steps:
+                lines.append("::: {.fragment}")
+                lines.append("$$")
+                lines.append(step)
+                lines.append("$$")
+                lines.append(":::")
+        else:
+            lines.append("$$")
+            lines.append(steps[0])
+            lines.append("$$")
+        return eq_notes
 
     def append_r_chunk(code: str, label: str) -> None:
         body = sanitize_r_chunk(code, label)
@@ -1376,6 +2208,16 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
         lines.append(f"```{{r {label}, echo=TRUE}}")
         lines.extend(body.splitlines())
         lines.append("```")
+
+    def heading_for_slide(slide_title: str, figure_path: str) -> str:
+        clean_title = str(slide_title or "").replace("{", "").replace("}", "")
+        fig = str(figure_path or "").strip()
+        if not fig:
+            return f"## {clean_title}"
+        return (
+            f'## {clean_title} '
+            f'{{background-image="{fig}" background-size="cover" background-position="right center" background-opacity="0.10"}}'
+        )
 
     for idx, raw_slide in enumerate(sections):
         slide = normalize_slide_obj(raw_slide, idx)
@@ -1387,6 +2229,7 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
         activity = str(slide.get("activity", "")).strip()
         equation = str(slide.get("equation", "")).strip()
         r_chunk = str(slide.get("rChunk", "")).strip()
+        figure_path = str(slide.get("figurePath", "")).strip()
         if layout == "simulation" and not r_chunk:
             r_chunk = "\n".join(
                 [
@@ -1398,7 +2241,7 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
                 ]
             )
 
-        lines.append(f"## {slide_title}")
+        lines.append(heading_for_slide(slide_title, figure_path))
         if subtitle:
             lines.append("")
             lines.append(f"*{esc(subtitle)}*")
@@ -1420,7 +2263,11 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
                     "### Formula",
                 ]
             )
-            append_equation(equation or r"\bar{x} \pm t_{n-1,\alpha/2}\frac{s}{\sqrt{n}}")
+            eq_notes = append_equation(equation or r"\bar{x} \pm t_{n-1,\alpha/2}\frac{s}{\sqrt{n}}")
+            if eq_notes:
+                lines.append("")
+                for note in eq_notes[:3]:
+                    lines.append(f"- {esc(note)}")
             lines.extend([":::", "::::"])
         elif layout == "simulation":
             lines.extend(
@@ -1459,7 +2306,9 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
             lines.append(esc(example or "Walk through one concrete example step-by-step and interpret the result."))
             if equation:
                 lines.append("")
-                append_equation(equation)
+                eq_notes = append_equation(equation)
+                if eq_notes:
+                    lines.extend([f"- {esc(note)}" for note in eq_notes[:2]])
             if r_chunk:
                 lines.append("")
                 append_r_chunk(r_chunk, f"example_{idx + 1}")
@@ -1498,7 +2347,9 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
             append_bullets(bullets, limit=4)
             if equation:
                 lines.append("")
-                append_equation(equation)
+                eq_notes = append_equation(equation)
+                if eq_notes:
+                    lines.extend([f"- {esc(note)}" for note in eq_notes[:2]])
 
         if idx != len(sections) - 1:
             lines.append("")
@@ -1538,6 +2389,248 @@ def safe_write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def safe_write_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+
+
+def wrap_svg_lines(text: str, max_chars: int = 34, max_lines: int = 3) -> list[str]:
+    words = sanitize_text(text).split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        current = word
+        if len(lines) >= max_lines:
+            break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    return lines[:max_lines]
+
+
+def svg_palette_for_layout(layout: str) -> tuple[str, str, str]:
+    key = str(layout or "concept").lower()
+    if key == "formula":
+        return "#eef5ff", "#9bb8f5", "#315da8"
+    if key == "simulation":
+        return "#effbf4", "#8ed9b2", "#2f7b5f"
+    if key == "example":
+        return "#fff8ef", "#f8c88a", "#9c5a00"
+    if key == "activity":
+        return "#fff1f1", "#f4abab", "#9f3f3f"
+    if key == "summary":
+        return "#f6f3ff", "#c2b4f0", "#5a4e9c"
+    return "#f4f8ff", "#adc4ec", "#3f5f98"
+
+
+def build_slide_illustration_svg(slide: dict[str, object], idx: int) -> str:
+    title = sanitize_text(slide.get("title", f"Slide {idx + 1}"))
+    subtitle = sanitize_text(slide.get("subtitle", ""))
+    bullets = slide.get("bullets", []) if isinstance(slide.get("bullets"), list) else []
+    layout = sanitize_text(slide.get("layout", "concept")).lower()
+    bg, accent_soft, accent = svg_palette_for_layout(layout)
+
+    title_lines = wrap_svg_lines(title, max_chars=32, max_lines=2)
+    subtitle_lines = wrap_svg_lines(subtitle, max_chars=40, max_lines=2)
+    bullet_lines: list[str] = []
+    for item in bullets[:3]:
+        bullet_lines.extend(wrap_svg_lines(str(item), max_chars=40, max_lines=1))
+
+    title_svg = "\n".join(
+        [
+            f'<text x="120" y="{190 + i * 56}" fill="#13233f" font-size="50" font-weight="700" font-family="Arial, sans-serif">{html.escape(line)}</text>'
+            for i, line in enumerate(title_lines)
+        ]
+    )
+    subtitle_svg = "\n".join(
+        [
+            f'<text x="120" y="{320 + i * 34}" fill="#2f4a76" font-size="28" font-style="italic" font-family="Arial, sans-serif">{html.escape(line)}</text>'
+            for i, line in enumerate(subtitle_lines)
+        ]
+    )
+    bullet_svg = "\n".join(
+        [
+            f'<text x="154" y="{448 + i * 52}" fill="#1f2b45" font-size="30" font-family="Arial, sans-serif">• {html.escape(line)}</text>'
+            for i, line in enumerate(bullet_lines[:3])
+        ]
+    )
+
+    return "\n".join(
+        [
+            '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">',
+            f'<rect width="1600" height="900" fill="{bg}" />',
+            f'<circle cx="1300" cy="150" r="240" fill="{accent_soft}" opacity="0.45"/>',
+            f'<circle cx="1460" cy="780" r="260" fill="{accent_soft}" opacity="0.38"/>',
+            f'<rect x="82" y="108" width="1436" height="684" rx="26" fill="#ffffff" opacity="0.82" />',
+            f'<rect x="82" y="108" width="1436" height="684" rx="26" fill="none" stroke="{accent}" stroke-width="4" opacity="0.65" />',
+            f'<rect x="1020" y="210" width="430" height="362" rx="22" fill="{accent_soft}" opacity="0.50"/>',
+            f'<path d="M1060 520 L1130 450 L1210 505 L1290 390 L1380 450" fill="none" stroke="{accent}" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/>',
+            title_svg,
+            subtitle_svg,
+            bullet_svg,
+            f'<text x="120" y="760" fill="#2f4a76" font-size="24" font-family="Arial, sans-serif">StatEdu Illustration • Slide {idx + 1}</text>',
+            "</svg>",
+        ]
+    )
+
+
+def build_image_prompt(deck_title: str, slide: dict[str, object], idx: int) -> str:
+    title = sanitize_text(slide.get("title", f"Slide {idx + 1}"))
+    subtitle = sanitize_text(slide.get("subtitle", ""))
+    layout = sanitize_text(slide.get("layout", "concept")).lower() or "concept"
+    bullets = slide.get("bullets", []) if isinstance(slide.get("bullets"), list) else []
+    bullet_text = "; ".join(sanitize_bullet_text(item) for item in bullets[:4] if sanitize_bullet_text(item))
+    layout_hint = {
+        "title": "opening lecture cover visual",
+        "concept": "clean conceptual diagram with data points/shapes",
+        "formula": "mathematical visual metaphor with geometric structure, no equations rendered as text",
+        "simulation": "data simulation style chart-like abstract figure",
+        "example": "applied classroom example visual with simple objects",
+        "activity": "students collaborating around data cards visual",
+        "summary": "recap workflow visual with arrows and milestones",
+    }.get(layout, "educational data concept visual")
+
+    prompt_parts = [
+        f"Create a 16:9 background illustration for a statistics lecture slide.",
+        f"Deck theme: {deck_title}.",
+        f"Slide title: {title}.",
+        f"Slide subtitle/context: {subtitle}.",
+        f"Key learning points: {bullet_text}.",
+        f"Visual intent: {layout_hint}.",
+        f"Style: {IMAGE_STYLE_PROMPT}.",
+        "Requirements: no text labels, no logos, no watermarks, no people faces close-up, high contrast but soft enough behind slide text.",
+    ]
+    return " ".join(part for part in prompt_parts if part)
+
+
+def call_openai_image(prompt: str) -> bytes:
+    key = resolve_image_key("openai")
+    if not key:
+        raise RuntimeError("Missing OpenAI API key for image generation.")
+    payload = {
+        "model": resolve_image_model("openai"),
+        "prompt": prompt,
+        "size": OPENAI_IMAGE_SIZE,
+        "quality": "medium",
+        "n": 1,
+        "response_format": "b64_json",
+    }
+    data = post_json(
+        "https://api.openai.com/v1/images/generations",
+        payload,
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    items = data.get("data", [])
+    if not isinstance(items, list) or not items:
+        raise RuntimeError("OpenAI image response missing data.")
+    first = items[0] if isinstance(items[0], dict) else {}
+    b64 = str(first.get("b64_json", "")).strip()
+    if not b64:
+        raise RuntimeError("OpenAI image response missing b64_json.")
+    return base64.b64decode(b64)
+
+
+def generate_external_figures(
+    *,
+    deck_id: str,
+    deck_title: str,
+    sections: list[dict[str, object]],
+    progress_cb: Callable[[str, float], None] | None = None,
+) -> tuple[int, str | None]:
+    if progress_cb:
+        progress_cb("image_generation", 0.84)
+    provider = resolve_image_provider()
+    if not IMAGE_GENERATION_ENABLED or provider in {"none", "off", "local"}:
+        return 0, None
+    if provider != "openai":
+        return 0, f"Image provider '{provider}' is not implemented; using local illustrations."
+    if not resolve_image_key("openai"):
+        return 0, "Image generation skipped: OpenAI key not configured."
+
+    max_count = min(IMAGE_MAX_SLIDES, len(sections))
+    if max_count <= 0:
+        return 0, None
+
+    deck_dir = DECK_DIR / deck_id
+    figures_dir = deck_dir / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    success = 0
+    errors: list[str] = []
+    for idx in range(max_count):
+        slide = normalize_slide_obj(sections[idx], idx)
+        prompt = build_image_prompt(deck_title, slide, idx)
+        try:
+            image_bytes = call_openai_image(prompt)
+            file_name = f"slide-{idx + 1:02d}.png"
+            file_path = figures_dir / file_name
+            safe_write_bytes(file_path, image_bytes)
+            if isinstance(sections[idx], dict):
+                sections[idx]["figurePath"] = f"figures/{file_name}"
+            success += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"slide {idx + 1}: {sanitize_text(str(exc))[:120]}")
+        if progress_cb:
+            p = 0.84 + ((idx + 1) / max_count) * 0.04
+            progress_cb(f"image_slide_{idx + 1}", round(p, 4))
+
+    warning = None
+    if errors and success == 0:
+        warning = "Image generation failed; kept local illustrations."
+    elif errors:
+        warning = f"Some slide images failed ({len(errors)}); local illustrations kept for the rest."
+    return success, warning
+
+
+def attach_slide_figure_paths(sections: list[dict[str, object]]) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for idx, raw in enumerate(sections):
+        slide = normalize_slide_obj(raw, idx)
+        fig = str(slide.get("figurePath", "")).strip()
+        if not fig:
+            slide["figurePath"] = f"figures/slide-{idx + 1:02d}.svg"
+        out.append(slide)
+    return out
+
+
+def write_deck_figures(deck: dict[str, object]) -> None:
+    deck_id = str(deck.get("id", "")).strip()
+    if not deck_id:
+        return
+    slides = deck.get("slides", [])
+    if not isinstance(slides, list):
+        return
+    deck_dir = DECK_DIR / deck_id
+    figures_dir = deck_dir / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    for idx, raw_slide in enumerate(slides):
+        slide = normalize_slide_obj(raw_slide, idx)
+        fig_rel = str(slide.get("figurePath", f"figures/slide-{idx + 1:02d}.svg")).strip() or f"figures/slide-{idx + 1:02d}.svg"
+        fig_name = Path(fig_rel).name
+        fig_path = figures_dir / fig_name
+        suffix = fig_path.suffix.lower()
+        if suffix == ".svg":
+            svg = build_slide_illustration_svg(slide, idx)
+            safe_write(fig_path, svg)
+        elif not fig_path.exists():
+            # Keep expected file path stable by creating SVG fallback when external image is missing.
+            fallback_name = f"slide-{idx + 1:02d}.svg"
+            fig_name = fallback_name
+            fig_path = figures_dir / fig_name
+            svg = build_slide_illustration_svg(slide, idx)
+            safe_write(fig_path, svg)
+        if isinstance(raw_slide, dict):
+            raw_slide["figurePath"] = f"figures/{fig_name}"
+
+
 def load_deck(deck_id: str) -> dict[str, object] | None:
     meta_path = DECK_DIR / deck_id / "deck.json"
     if not meta_path.exists():
@@ -1549,6 +2642,13 @@ def save_deck(deck: dict[str, object]) -> None:
     deck_id = str(deck["id"])
     deck_dir = DECK_DIR / deck_id
     deck_dir.mkdir(parents=True, exist_ok=True)
+    slides = deck.get("slides", [])
+    if isinstance(slides, list):
+        deck["slides"] = attach_slide_figure_paths(slides)
+        write_deck_figures(deck)
+    shared_css = BASE_DIR / "style.css"
+    if shared_css.exists():
+        shutil.copy2(shared_css, deck_dir / "style.css")
     safe_write(deck_dir / "deck.json", json.dumps(deck, ensure_ascii=True, indent=2))
     safe_write(deck_dir / "deck.qmd", str(deck.get("qmd", "")))
 
@@ -1584,6 +2684,57 @@ def render_quarto(deck_id: str) -> tuple[str | None, str | None]:
     return f"/decks/{deck_id}/index.html", None
 
 
+def build_deck_bundle(deck_id: str) -> tuple[bytes, str]:
+    deck = load_deck(deck_id)
+    if not deck:
+        raise FileNotFoundError(f"Deck not found: {deck_id}")
+
+    save_deck(deck)
+    deck_dir = DECK_DIR / deck_id
+    title_slug = slugify(str(deck.get("title", "statedu-deck")), fallback=f"statedu-{deck_id}")
+    bundle_name = f"{title_slug}.zip"
+
+    qmd_path = deck_dir / "deck.qmd"
+    style_path = deck_dir / "style.css"
+    figures_dir = deck_dir / "figures"
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        if qmd_path.exists():
+            zf.write(qmd_path, arcname="statedu-deck.qmd")
+        else:
+            zf.writestr("statedu-deck.qmd", str(deck.get("qmd", "")))
+
+        if style_path.exists():
+            zf.write(style_path, arcname="style.css")
+        elif (BASE_DIR / "style.css").exists():
+            zf.write(BASE_DIR / "style.css", arcname="style.css")
+
+        if figures_dir.exists():
+            for fig_path in sorted(figures_dir.glob("*")):
+                if fig_path.is_file():
+                    zf.write(fig_path, arcname=f"figures/{fig_path.name}")
+
+        zf.writestr(
+            "README-BUNDLE.txt",
+            "\n".join(
+                [
+                    "StatEdu Deck Bundle",
+                    "",
+                    "Contents:",
+                    "- statedu-deck.qmd",
+                    "- style.css",
+                    "- figures/ (illustrative image assets used by the deck)",
+                    "",
+                    "Render locally with:",
+                    "quarto render statedu-deck.qmd --to revealjs",
+                ]
+            ),
+        )
+
+    return buffer.getvalue(), bundle_name
+
+
 def create_deck(
     prompt: str,
     output_format: str,
@@ -1612,12 +2763,13 @@ def create_deck(
     llm_used = False
     llm_warning: str | None = None
     llm_provider = resolve_llm_provider()
+    web_research: list[dict[str, str]] = []
 
     locked_slide_indexes = locked_slide_indexes or []
     approved_slide_indexes = approved_slide_indexes or []
 
     try:
-        title, sections, llm_used, llm_warning, llm_provider = maybe_generate_with_llm(
+        title, sections, llm_used, llm_warning, llm_provider, web_research = maybe_generate_with_llm(
             prompt=prompt,
             source_excerpt=source_excerpt,
             feedback=feedback,
@@ -1645,6 +2797,7 @@ def create_deck(
     protected_indexes = sorted(set(locked_norm + approved_norm))
     if protected_indexes and previous_slides:
         sections = merge_protected_slides(previous_slides, sections, protected_indexes, requested_count)
+    sections = attach_slide_figure_paths(sections)
 
     description = (
         "Rendered from .qmd (Reveal.js)"
@@ -1655,6 +2808,21 @@ def create_deck(
         description += f" | Source: {source_name}"
 
     resolved_id = deck_id or uuid.uuid4().hex[:12]
+    image_count = 0
+    image_provider_used = resolve_image_provider()
+    image_warning: str | None = None
+    if output_format == "quarto":
+        image_count, image_warning = generate_external_figures(
+            deck_id=resolved_id,
+            deck_title=title,
+            sections=sections,
+            progress_cb=progress_cb,
+        )
+        if image_provider_used == "local":
+            image_count = len(sections)
+        if image_warning:
+            llm_warning = f"{llm_warning}; {image_warning}" if llm_warning else image_warning
+
     qmd = build_qmd(title, sections, animation)
     deck: dict[str, object] = {
         "id": resolved_id,
@@ -1676,8 +2844,13 @@ def create_deck(
         "approvedSlideIndexes": approved_norm,
         "llmUsed": llm_used,
         "llmProvider": llm_provider,
-        "generationPipeline": ["template", "content", "review", "correction"] if llm_used else ["fallback"],
+        "generationPipeline": ["web_research", "template", "content_per_slide", "review", "fact_check", "correction", "image_generation"] if llm_used else ["web_research", "fallback", "image_generation"],
         "llmWarning": llm_warning,
+        "webResearch": web_research,
+        "imageGenerationEnabled": IMAGE_GENERATION_ENABLED,
+        "imageProvider": image_provider_used,
+        "imageModel": resolve_image_model(image_provider_used),
+        "imageCount": image_count,
         "renderUrl": None,
         "renderWarning": None,
         "updatedAt": now_iso(),
@@ -1701,6 +2874,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_bytes(
+        self,
+        code: int,
+        body: bytes,
+        *,
+        content_type: str,
+        filename: str | None = None,
+    ) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
@@ -1772,6 +2964,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             quarto_bin = resolve_quarto_bin()
             llm = llm_status()
+            image = image_status()
             self._send_json(
                 200,
                 {
@@ -1781,7 +2974,17 @@ class Handler(BaseHTTPRequestHandler):
                     "llmProvider": llm["provider"],
                     "llmModel": llm["model"],
                     "llmConfigured": llm["configured"],
+                    "llmTimeoutSec": LLM_TIMEOUT_SEC,
+                    "llmRetryCount": LLM_RETRY_COUNT,
                     "renderStepDelaySec": RENDER_STEP_DELAY_SEC,
+                    "webResearchEnabled": WEB_RESEARCH_ENABLED,
+                    "webResearchMaxResults": WEB_RESEARCH_MAX_RESULTS,
+                    "webResearchTimeoutSec": WEB_RESEARCH_TIMEOUT_SEC,
+                    "imageGenerationEnabled": image["enabled"],
+                    "imageProvider": image["provider"],
+                    "imageModel": image["model"],
+                    "imageConfigured": image["configured"],
+                    "imageMaxSlides": image["maxSlides"],
                     "timestamp": now_iso(),
                 },
             )
@@ -1794,6 +2997,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": f"Job not found: {job_id}"})
                 return
             self._send_json(200, {"job": job})
+            return
+
+        if path == "/api/deck/download":
+            query = parse_qs(parsed.query)
+            deck_id = str((query.get("deckId", [""])[0] or "")).strip()
+            if not deck_id:
+                self._send_json(400, {"error": "deckId is required"})
+                return
+            try:
+                body, filename = build_deck_bundle(deck_id)
+            except FileNotFoundError:
+                self._send_json(404, {"error": f"Deck not found: {deck_id}"})
+                return
+            self._send_bytes(
+                200,
+                body,
+                content_type="application/zip",
+                filename=filename,
+            )
             return
 
         if path.startswith("/decks/"):
@@ -2103,6 +3325,7 @@ def main() -> None:
     ensure_dirs()
     quarto_bin = resolve_quarto_bin()
     llm = llm_status()
+    image = image_status()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Server running at http://{HOST}:{PORT}")
     print(f"Data dir: {DATA_DIR}")
@@ -2111,6 +3334,12 @@ def main() -> None:
         print(f"Quarto bin: {quarto_bin}")
     print(f"LLM provider: {llm['provider']} ({'configured' if llm['configured'] else 'not configured'})")
     print(f"LLM model: {llm['model']}")
+    print(
+        "Image stage: "
+        f"{image['provider']} ({image['model']}, "
+        f"{'configured' if image['configured'] else 'not configured'}, "
+        f"maxSlides={image['maxSlides']})"
+    )
     httpd.serve_forever()
 
 

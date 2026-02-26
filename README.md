@@ -8,10 +8,13 @@ The app generates editable Quarto Reveal.js slides, renders live previews, suppo
 
 - Prompt-to-deck generation for statistics lessons
 - Multi-stage GenAI pipeline for quality:
+  - `web_research`
   - `template_generation`
-  - `content_generation`
+  - `content_generation` (one slide at a time)
   - `review_stage`
+  - `fact_check_stage`
   - `correction_stage`
+  - `image_generation`
   - `rendering`
 - Source upload support (`.pdf`, `.pptx`, `.md`, `.txt`, images)
 - Human-in-the-loop refine workflow
@@ -21,13 +24,16 @@ The app generates editable Quarto Reveal.js slides, renders live previews, suppo
   - `mathematical`
   - `simulation`
 - Quarto `.qmd` output with live preview
+- Auto-generated illustrative slide figures (`figures/*.svg`) with subtle background integration
 - Audience-facing slide language (no presenter coaching text in visible slide body)
 - Content structure emphasis per slide: definition, context, and student-useful materials
 - R-enabled simulation/plot slides (e.g., histogram, scatter, cluster plot) for concept illustration
 - Base-R-safe rendering path for generated `rChunk` code (auto-avoids missing tidyverse/ggplot dependencies)
 - In-app `.qmd` editing with re-render
+- One-click deck bundle download (`.qmd` + `style.css` + `figures/` as zip)
 - Slide-level protection during refine (`approve` / `lock`)
 - Stage-aware progress tracking in workspace and cover page pipeline panel
+- Research-first generation flow (Genspark-style): source upload + web findings -> template -> per-slide content generation -> review -> fact-check -> correction -> image generation -> render
 - Optional Google Slides export handshake endpoint
 
 ## Tech Stack
@@ -71,9 +77,21 @@ http://127.0.0.1:8000
 - `STATEDU_PORT` (default: `8000`)
 - `STATEDU_LLM_PROVIDER` (`openai`, `gemini`, `anthropic`, `mock`)
 - `STATEDU_OPENAI_MODEL` / `STATEDU_GEMINI_MODEL` / `STATEDU_ANTHROPIC_MODEL`
+- `STATEDU_LLM_TIMEOUT_SEC` (default: unlimited; set to `0`, `none`, or leave unset)
+- `STATEDU_LLM_RETRY_COUNT` (default: `1`, total attempts = `1 + retry_count`)
+- `STATEDU_LLM_RETRY_BACKOFF_SEC` (default: `1.2`)
 - `STATEDU_DEFAULT_SLIDE_COUNT` (default: `8`)
 - `STATEDU_MAX_SLIDE_COUNT` (default: `40`)
 - `STATEDU_RENDER_STEP_DELAY_SEC` (default: `0.35`)
+- `STATEDU_WEB_RESEARCH_ENABLED` (`1` or `0`, default: `1`)
+- `STATEDU_WEB_RESEARCH_MAX_RESULTS` (default: `5`)
+- `STATEDU_WEB_RESEARCH_TIMEOUT_SEC` (default: `6`)
+- `STATEDU_IMAGE_GENERATION_ENABLED` (`1` or `0`, default: `1`)
+- `STATEDU_IMAGE_PROVIDER` (`local`, `openai`, `none`; default: `local`)
+- `STATEDU_IMAGE_MAX_SLIDES` (default: `12`)
+- `STATEDU_IMAGE_STYLE_PROMPT` (style hint for generated visuals)
+- `STATEDU_OPENAI_IMAGE_MODEL` (default: `gpt-image-1`)
+- `STATEDU_OPENAI_IMAGE_SIZE` (default: `1536x1024`)
 
 ## Notes
 

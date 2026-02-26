@@ -285,7 +285,7 @@
 
     .cover-pipeline-stages {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
       gap: 6px;
     }
 
@@ -1125,7 +1125,7 @@
           <span class="brand-badge" style="width:28px;height:28px;">SE</span>
           StatEdu Slides Helper AI
         </div>
-        <p class="cover-kicker">Upload -> Generate -> Refine -> Teach</p>
+        <p class="cover-kicker">Upload -> Research -> Generate -> Refine -> Teach</p>
         <h1 class="cover-title">Turn <span class="accent">Textbooks, Notes, and Old Slides</span> into Editable Quarto Decks</h1>
         <p class="cover-copy">
           Build classroom-ready statistical education slides with AI, then keep humans in the loop.
@@ -1170,10 +1170,13 @@
             <div id="cover-progress-fill" class="cover-pipeline-fill"></div>
           </div>
           <div class="cover-pipeline-stages">
+            <span class="cover-stage-chip" data-stage-key="research">Research</span>
             <span class="cover-stage-chip" data-stage-key="template">Template</span>
             <span class="cover-stage-chip" data-stage-key="content">Content</span>
             <span class="cover-stage-chip" data-stage-key="review">Review</span>
+            <span class="cover-stage-chip" data-stage-key="fact_check">Fact-check</span>
             <span class="cover-stage-chip" data-stage-key="correction">Correction</span>
+            <span class="cover-stage-chip" data-stage-key="illustration">Illustration</span>
             <span class="cover-stage-chip" data-stage-key="render">Render</span>
           </div>
         </div>
@@ -1187,6 +1190,7 @@
           <ul class="story-list">
             <li>Textbook chapters or old presentations</li>
             <li>Prompt your learning goals and audience level</li>
+            <li>Auto-web research enriches the draft before slide writing</li>
           </ul>
         </article>
         <article class="story-card" data-tour-card="1">
@@ -1197,6 +1201,7 @@
           <ul class="story-list">
             <li>Quarto Reveal.js deck with animations</li>
             <li>Long-form deck sizes (up to 40 slides)</li>
+            <li>Slides authored one-by-one before final global fact-check</li>
           </ul>
         </article>
         <article class="story-card" data-tour-card="2">
@@ -1229,7 +1234,7 @@
         <button id="mode-full-btn" class="mode-btn" type="button" disabled>QMD Full</button>
       </div>
       <button id="export-btn" class="btn btn-secondary" disabled>Export to Google Slides</button>
-      <button id="download-qmd-btn" class="btn btn-primary" disabled>Download .qmd</button>
+      <button id="download-qmd-btn" class="btn btn-primary" disabled>Download Deck Bundle</button>
     </div>
   </header>
 
@@ -1407,7 +1412,7 @@
       },
       {
         title: 'Generate a long structured draft',
-        copy: 'Choose slide count and let AI build concept, example, activity, and summary flow.',
+        copy: 'Web research runs first, then AI builds concept, example, activity, and summary flow.',
         cardIndex: 1,
         highlightIndex: 1
       },
@@ -1535,12 +1540,16 @@
 
     function stageKeyFromRaw(stageRaw) {
       const stage = String(stageRaw || '').toLowerCase();
-      if (stage === 'generating') return 'template';
+      if (stage === 'generating') return 'research';
+      if (stage.includes('research')) return 'research';
       if (stage === 'fallback_generation') return 'content';
+      if (stage.startsWith('content_slide_')) return 'content';
       if (stage.includes('template')) return 'template';
       if (stage.includes('content')) return 'content';
       if (stage.includes('review')) return 'review';
+      if (stage.includes('fact_check')) return 'fact_check';
       if (stage.includes('correction')) return 'correction';
+      if (stage.includes('image') || stage.includes('illustration')) return 'illustration';
       if (stage.includes('render') || stage === 'completed') return 'render';
       return '';
     }
@@ -1548,11 +1557,22 @@
     function stageLabelFromRaw(stageRaw) {
       const stage = String(stageRaw || '').toLowerCase();
       if (stage === 'queued') return 'Queued';
-      if (stage === 'generating') return 'Preparing generation';
+      if (stage === 'generating') return 'Preparing research';
+      if (stage === 'web_research') return 'Web research';
       if (stage === 'template_generation') return 'Template generation';
-      if (stage === 'content_generation') return 'Content generation';
+      if (stage === 'content_generation') return 'Preparing per-slide generation';
+      if (stage.startsWith('content_slide_')) {
+        const n = Number(stage.replace('content_slide_', ''));
+        if (Number.isInteger(n) && n > 0) return `Generating content slide ${n}`;
+      }
       if (stage === 'review_stage') return 'Review stage';
+      if (stage === 'fact_check_stage') return 'Fact-check stage';
       if (stage === 'correction_stage') return 'Correction stage';
+      if (stage === 'image_generation') return 'Preparing illustrations';
+      if (stage.startsWith('image_slide_')) {
+        const n = Number(stage.replace('image_slide_', ''));
+        if (Number.isInteger(n) && n > 0) return `Generating illustration ${n}`;
+      }
       if (stage === 'finalizing') return 'Finalizing deck';
       if (stage === 'ready_for_render') return 'Ready for render';
       if (stage === 'rendering') return 'Rendering deck';
@@ -1567,7 +1587,7 @@
     }
 
     function updateCoverStageChips(activeKey, progress) {
-      const order = ['template', 'content', 'review', 'correction', 'render'];
+      const order = ['research', 'template', 'content', 'review', 'fact_check', 'correction', 'illustration', 'render'];
       const activeIdx = order.indexOf(activeKey);
       coverStageChips.forEach((chip) => {
         const key = chip.dataset.stageKey;
@@ -1875,8 +1895,19 @@
         if (deck.renderWarning) {
           addMessage(`Render warning: ${deck.renderWarning}`, 'ai');
         }
+        if (deck.llmUsed === false) {
+          addMessage('This draft used fallback mode, so content quality may be generic. Re-run generation to get a full LLM-authored deck.', 'ai');
+        }
+        if (Array.isArray(deck.webResearch) && deck.webResearch.length > 0) {
+          const providers = [...new Set(deck.webResearch.map((item) => item?.domain || item?.provider || '').filter(Boolean))];
+          const providerLabel = providers.slice(0, 3).join(', ');
+          addMessage(`Web research completed: ${deck.webResearch.length} source(s) used${providerLabel ? ` (${providerLabel})` : ''}.`, 'ai');
+        }
+        if (Number(deck.imageCount || 0) > 0) {
+          addMessage(`Illustrations generated: ${deck.imageCount} slide image(s) via ${deck.imageProvider || 'local'} (${deck.imageModel || 'default'}).`, 'ai');
+        }
         if (deck.llmWarning) {
-          addMessage(`LLM warning: ${deck.llmWarning}`, 'ai');
+          addMessage(`Generation warning: ${deck.llmWarning}`, 'ai');
         }
         addMessage(
           source === 'initial'
@@ -2035,15 +2066,29 @@
       });
     });
 
-    downloadQmdBtn.addEventListener('click', () => {
-      if (!currentDeck?.qmd) return;
-      const blob = new Blob([currentDeck.qmd], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'statedu-deck.qmd';
-      a.click();
-      URL.revokeObjectURL(url);
+    downloadQmdBtn.addEventListener('click', async () => {
+      if (!currentDeck?.id) return;
+      try {
+        setBusy(true);
+        const url = `${API_BASE}/deck/download?deckId=${encodeURIComponent(currentDeck.id)}`;
+        const res = await fetch(url, { method: 'GET' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Download failed with status ${res.status}`);
+        }
+        const blob = await res.blob();
+        const dlUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = dlUrl;
+        a.download = `${(currentDeck.title || 'statedu-deck').replace(/[^a-zA-Z0-9-_]+/g, '-').toLowerCase()}.zip`;
+        a.click();
+        URL.revokeObjectURL(dlUrl);
+        addMessage('Downloaded deck bundle (.qmd + style.css + figures).', 'ai');
+      } catch (error) {
+        addMessage(`Bundle download failed: ${error.message}`, 'ai');
+      } finally {
+        setBusy(false);
+      }
     });
 
     exportBtn.addEventListener('click', async () => {
@@ -2083,6 +2128,11 @@
           addMessage(`LLM provider "${health.llmProvider}" is not configured. Generation will use fallback logic until you set an API key.`, 'ai');
         } else if (health.llmProvider !== 'mock') {
           addMessage(`LLM connected: ${health.llmProvider} (${health.llmModel}).`, 'ai');
+        }
+        if (health.imageGenerationEnabled && health.imageProvider === 'openai' && !health.imageConfigured) {
+          addMessage('Image generation provider "openai" is enabled but not configured. Decks will use local SVG illustrations.', 'ai');
+        } else if (health.imageGenerationEnabled) {
+          addMessage(`Image stage: ${health.imageProvider} (${health.imageModel}).`, 'ai');
         }
       } catch (_) {
         // silent

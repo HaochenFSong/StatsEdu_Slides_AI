@@ -59,3 +59,24 @@
   background: rgba(241, 246, 255, 0.78);
   overflow-wrap: anywhere;
 }
+
+.reveal .slides section {
+  backdrop-filter: saturate(0.96);
+}
+
+.reveal .slide-background-content {
+  filter: saturate(0.86) brightness(1.04);
+}
+
+.reveal .math.display,
+.reveal .katex-display {
+  font-size: 0.9em;
+  line-height: 1.15;
+  margin: 0.22em 0;
+  overflow-wrap: anywhere;
+}
+
+.reveal .slides section .fragment .math.display,
+.reveal .slides section .fragment .katex-display {
+  padding: 0.12em 0;
+}
