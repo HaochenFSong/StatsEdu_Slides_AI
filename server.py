@@ -34,6 +34,40 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 
+BOOT_BASE_DIR = Path(__file__).resolve().parent
+
+
+def load_dotenv_file(path: Path) -> None:
+    if not path.is_file():
+        return
+    try:
+        raw_lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        else:
+            value = re.sub(r"\s+#.*$", "", value).strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_dotenv_file(BOOT_BASE_DIR / ".env")
+
+
 def parse_optional_timeout(raw_value: str | None, default: float | None) -> float | None:
     raw = str(raw_value or "").strip().lower()
     if not raw:
@@ -51,7 +85,7 @@ def parse_optional_timeout(raw_value: str | None, default: float | None) -> floa
 
 HOST = os.getenv("STATEDU_HOST", "127.0.0.1")
 PORT = int(os.getenv("STATEDU_PORT", "8000"))
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = BOOT_BASE_DIR
 DATA_DIR = BASE_DIR / ".statedu"
 DECK_DIR = DATA_DIR / "decks"
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -210,11 +244,12 @@ def resolve_llm_key(provider: str) -> str:
 
 def llm_status() -> dict[str, object]:
     provider = resolve_llm_provider()
-    configured = provider in {"mock", "none", "off"} or bool(resolve_llm_key(provider))
+    configured = provider not in {"mock", "none", "off"} and bool(resolve_llm_key(provider))
     return {
         "provider": provider,
         "model": resolve_llm_model(provider),
         "configured": configured,
+        "fallbackOnly": provider in {"mock", "none", "off"},
     }
 
 
@@ -2199,6 +2234,10 @@ def maybe_generate_with_llm(
         stage_warnings.append(research_warning)
 
     if provider in {"mock", "none", "off"}:
+        stage_warnings.insert(
+            0,
+            "LLM not configured in current server process; set STATEDU_LLM_PROVIDER and API key (for example OPENAI_API_KEY), then restart ./server.py.",
+        )
         if progress_cb:
             progress_cb("fallback_generation", 0.45)
         merged_excerpt = source_excerpt
@@ -3441,6 +3480,7 @@ def create_deck(
         "approvedSlideIndexes": approved_norm,
         "llmUsed": llm_used,
         "llmProvider": llm_provider,
+        "llmModel": resolve_llm_model(llm_provider),
         "generationPipeline": ["web_research", "template", "content_per_slide", "review", "fact_check", "correction", "image_generation"] if llm_used else ["web_research", "fallback", "image_generation"],
         "llmWarning": llm_warning,
         "webResearch": web_research,

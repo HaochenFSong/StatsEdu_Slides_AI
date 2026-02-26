@@ -62,6 +62,8 @@ export OPENAI_API_KEY=your_key_here
 export STATEDU_OPENAI_MODEL=gpt-4.1-mini
 ```
 
+You can also put these in a local `.env` file in the project root. `server.py` now auto-loads `.env` on startup (without overriding already-exported shell variables).
+
 3. Start server:
 
 ```bash

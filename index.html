@@ -1937,7 +1937,17 @@
           addMessage(`Render warning: ${deck.renderWarning}`, 'ai');
         }
         if (deck.llmUsed === false) {
-          addMessage('This draft used fallback mode, so content quality may be generic. Re-run generation to get a full LLM-authored deck.', 'ai');
+          if (['mock', 'none', 'off'].includes(String(deck.llmProvider || '').toLowerCase())) {
+            addMessage(
+              `This draft used fallback mode because LLM is not configured in the running server process (provider: ${deck.llmProvider || 'mock'}). Set API env vars and restart ./server.py.`,
+              'ai'
+            );
+          } else {
+            addMessage(
+              `This draft used fallback mode (provider: ${deck.llmProvider || 'unknown'}${deck.llmModel ? `, model: ${deck.llmModel}` : ''}). Check Generation warning details and re-run.`,
+              'ai'
+            );
+          }
         }
         if (Array.isArray(deck.webResearch) && deck.webResearch.length > 0) {
           const providers = [...new Set(deck.webResearch.map((item) => item?.domain || item?.provider || '').filter(Boolean))];
