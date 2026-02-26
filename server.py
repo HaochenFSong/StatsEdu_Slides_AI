@@ -66,6 +66,7 @@ VALID_TEACHING_STYLES = {"balanced", "conceptual", "mathematical", "simulation"}
 WEB_RESEARCH_ENABLED = os.getenv("STATEDU_WEB_RESEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 WEB_RESEARCH_MAX_RESULTS = int(os.getenv("STATEDU_WEB_RESEARCH_MAX_RESULTS", "5"))
 WEB_RESEARCH_TIMEOUT_SEC = int(os.getenv("STATEDU_WEB_RESEARCH_TIMEOUT_SEC", "6"))
+SLIDE_AUTO_SPLIT_ENABLED = os.getenv("STATEDU_SLIDE_AUTO_SPLIT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 IMAGE_GENERATION_ENABLED = os.getenv("STATEDU_IMAGE_GENERATION_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 IMAGE_PROVIDER = os.getenv("STATEDU_IMAGE_PROVIDER", "local").strip().lower()
 IMAGE_MAX_SLIDES = max(1, min(MAX_SLIDE_COUNT, int(os.getenv("STATEDU_IMAGE_MAX_SLIDES", "12"))))
@@ -1091,6 +1092,231 @@ def normalize_slide_obj(raw: object, idx: int) -> dict[str, object]:
         "rChunk": r_chunk,
         "figurePath": figure_path,
     }
+
+
+def split_text_into_chunks(text: str, max_chars: int, max_chunks: int = 4) -> list[str]:
+    value = sanitize_text(text)
+    if not value:
+        return []
+    if len(value) <= max_chars:
+        return [value]
+
+    sentences = re.split(r"(?<=[.!?])\s+", value)
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        sent = sanitize_text(sentence)
+        if not sent:
+            continue
+        candidate = f"{current} {sent}".strip() if current else sent
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            if len(chunks) >= max_chunks:
+                return chunks[:max_chunks]
+        if len(sent) <= max_chars:
+            current = sent
+        else:
+            words = sent.split()
+            block = ""
+            for word in words:
+                try_block = f"{block} {word}".strip() if block else word
+                if len(try_block) <= max_chars:
+                    block = try_block
+                else:
+                    if block:
+                        chunks.append(block)
+                        if len(chunks) >= max_chunks:
+                            return chunks[:max_chunks]
+                    block = word
+            current = block
+    if current and len(chunks) < max_chunks:
+        chunks.append(current)
+    return chunks[:max_chunks]
+
+
+def slide_layout_limits(layout: str) -> dict[str, int]:
+    key = str(layout or "concept").lower()
+    base = {"max_bullets": 4, "max_bullet_chars_total": 420, "max_aux_chars": 170, "max_equation_steps": 3, "max_r_lines": 14}
+    if key == "title":
+        return {**base, "max_bullets": 3, "max_bullet_chars_total": 340, "max_aux_chars": 120}
+    if key == "formula":
+        return {**base, "max_bullets": 4, "max_bullet_chars_total": 340, "max_aux_chars": 140, "max_equation_steps": 2}
+    if key == "simulation":
+        return {**base, "max_bullets": 4, "max_bullet_chars_total": 320, "max_aux_chars": 140, "max_r_lines": 12}
+    if key == "example":
+        return {**base, "max_bullets": 4, "max_bullet_chars_total": 360, "max_aux_chars": 155}
+    if key == "activity":
+        return {**base, "max_bullets": 4, "max_bullet_chars_total": 340, "max_aux_chars": 145}
+    if key == "summary":
+        return {**base, "max_bullets": 4, "max_bullet_chars_total": 360, "max_aux_chars": 150}
+    return base
+
+
+def rendered_bullet_limit(layout: str) -> int:
+    key = str(layout or "concept").lower()
+    if key == "title":
+        return 3
+    return 4
+
+
+def chunk_bullets_by_budget(bullets: list[str], max_bullets: int, max_chars_total: int) -> list[list[str]]:
+    groups: list[list[str]] = []
+    current: list[str] = []
+    current_chars = 0
+    for raw in bullets:
+        txt = clamp_sentence(sanitize_bullet_text(raw), MAX_BULLET_CHARS)
+        if not txt:
+            continue
+        projected = current_chars + len(txt)
+        if current and (len(current) >= max_bullets or projected > max_chars_total):
+            groups.append(current)
+            current = []
+            current_chars = 0
+        current.append(txt)
+        current_chars += len(txt)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def continuation_title(base_title: str, continuation_idx: int) -> str:
+    title = sanitize_text(base_title)
+    if not title:
+        title = "Slide"
+    low = title.lower()
+    if "(cont" in low:
+        return title
+    if continuation_idx <= 1:
+        return f"{title} (cont.)"
+    return f"{title} (cont. {continuation_idx})"
+
+
+def split_slide_for_readability(raw_slide: object, idx: int) -> list[dict[str, object]]:
+    slide = normalize_slide_obj(raw_slide, idx)
+    layout = str(slide.get("layout", "concept")).lower()
+    limits = slide_layout_limits(layout)
+    max_bullets = limits["max_bullets"]
+    max_chars_total = limits["max_bullet_chars_total"]
+    max_aux_chars = limits["max_aux_chars"]
+
+    first = dict(slide)
+    overflow_bullets: list[str] = []
+    equation_overflow = ""
+    rchunk_overflow = ""
+
+    if layout == "example":
+        example_text = str(first.get("example", "")).strip()
+        chunks = split_text_into_chunks(example_text, max_aux_chars, max_chunks=4)
+        if len(chunks) > 1:
+            first["example"] = chunks[0]
+            overflow_bullets.extend([f"Worked example continuation: {chunk}" for chunk in chunks[1:]])
+
+    if layout == "activity":
+        activity_text = str(first.get("activity", "")).strip()
+        chunks = split_text_into_chunks(activity_text, max_aux_chars, max_chunks=4)
+        if len(chunks) > 1:
+            first["activity"] = chunks[0]
+            overflow_bullets.extend([f"Activity continuation: {chunk}" for chunk in chunks[1:]])
+
+    if layout == "formula":
+        equation_text = str(first.get("equation", "")).strip()
+        steps, _ = parse_equation_payload(equation_text)
+        max_eq_steps = max(1, limits["max_equation_steps"])
+        if len(steps) > max_eq_steps:
+            first["equation"] = "\n".join(steps[:max_eq_steps])
+            equation_overflow = "\n".join(steps[max_eq_steps:])
+
+    if layout == "simulation":
+        code = str(first.get("rChunk", "")).strip()
+        if code:
+            lines = code.splitlines()
+            max_r_lines = max(6, limits["max_r_lines"])
+            if len(lines) > max_r_lines:
+                first["rChunk"] = "\n".join(lines[:max_r_lines]).strip()
+                rchunk_overflow = "\n".join(lines[max_r_lines:]).strip()
+                overflow_bullets.append("Continue code walkthrough on the next slide.")
+
+    visible_limit = rendered_bullet_limit(layout)
+    source_bullets = list(first.get("bullets", []))[:visible_limit]
+    source_bullets.extend(overflow_bullets)
+    bullet_groups = chunk_bullets_by_budget(source_bullets, max_bullets, max_chars_total)
+    if not bullet_groups:
+        bullet_groups = [[]]
+    first["bullets"] = bullet_groups[0][:max_bullets] if bullet_groups[0] else list(first.get("bullets", []))[:max_bullets]
+
+    needs_split = len(bullet_groups) > 1 or bool(equation_overflow) or bool(rchunk_overflow)
+    if not needs_split:
+        return [first]
+
+    split_slides: list[dict[str, object]] = [normalize_slide_obj(first, idx)]
+    extra_groups = bullet_groups[1:]
+    continuation_idx = 1
+
+    while extra_groups or equation_overflow or rchunk_overflow:
+        group = extra_groups.pop(0) if extra_groups else []
+        cont_layout = "concept"
+        cont_subtitle = "Continuation"
+        cont_equation = ""
+        cont_rchunk = ""
+
+        if equation_overflow:
+            cont_layout = "formula"
+            cont_subtitle = "Formula continuation"
+            cont_equation = equation_overflow
+            equation_overflow = ""
+        elif rchunk_overflow:
+            cont_layout = "simulation"
+            cont_subtitle = "Code continuation"
+            cont_rchunk = rchunk_overflow
+            rchunk_overflow = ""
+        elif layout in {"concept", "summary"}:
+            cont_layout = layout
+
+        if not group:
+            if cont_layout == "formula":
+                group = ["Continue equation interpretation in context."]
+            elif cont_layout == "simulation":
+                group = ["Continue simulation interpretation and connect to the learning objective."]
+            else:
+                group = ["Continue key ideas from the previous slide."]
+
+        cont = {
+            "title": continuation_title(str(first.get("title", "")), continuation_idx),
+            "subtitle": cont_subtitle,
+            "layout": cont_layout,
+            "bullets": group[:max_bullets],
+            "definition": "",
+            "context": "",
+            "studentMaterials": [],
+            "example": "",
+            "activity": "",
+            "equation": cont_equation,
+            "notes": "",
+            "rChunk": cont_rchunk,
+            "figurePath": "",
+        }
+        split_slides.append(normalize_slide_obj(cont, idx + continuation_idx))
+        continuation_idx += 1
+
+    return split_slides
+
+
+def rebalance_slides_for_readability(slides: list[dict[str, object]], max_total: int) -> list[dict[str, object]]:
+    if max_total <= 0:
+        return []
+    out: list[dict[str, object]] = []
+    for raw_slide in slides:
+        if len(out) >= max_total:
+            break
+        parts = split_slide_for_readability(raw_slide, len(out))
+        for part in parts:
+            if len(out) >= max_total:
+                break
+            out.append(normalize_slide_obj(part, len(out)))
+    return out[:max_total]
 
 
 def fallback_slide_from_template(
@@ -2797,6 +3023,18 @@ def create_deck(
     protected_indexes = sorted(set(locked_norm + approved_norm))
     if protected_indexes and previous_slides:
         sections = merge_protected_slides(previous_slides, sections, protected_indexes, requested_count)
+
+    if output_format == "quarto" and SLIDE_AUTO_SPLIT_ENABLED and not protected_indexes:
+        before_count = len(sections)
+        sections = rebalance_slides_for_readability(sections, MAX_SLIDE_COUNT)
+        after_count = len(sections)
+        if after_count > before_count:
+            split_msg = f"Auto-split {after_count - before_count} dense slide segment(s) for readability."
+            llm_warning = f"{llm_warning}; {split_msg}" if llm_warning else split_msg
+
+    requested_count = len(sections)
+    locked_norm = sanitize_slide_indexes(locked_norm, requested_count)
+    approved_norm = sanitize_slide_indexes(approved_norm, requested_count)
     sections = attach_slide_figure_paths(sections)
 
     description = (
@@ -2977,6 +3215,7 @@ class Handler(BaseHTTPRequestHandler):
                     "llmTimeoutSec": LLM_TIMEOUT_SEC,
                     "llmRetryCount": LLM_RETRY_COUNT,
                     "renderStepDelaySec": RENDER_STEP_DELAY_SEC,
+                    "slideAutoSplitEnabled": SLIDE_AUTO_SPLIT_ENABLED,
                     "webResearchEnabled": WEB_RESEARCH_ENABLED,
                     "webResearchMaxResults": WEB_RESEARCH_MAX_RESULTS,
                     "webResearchTimeoutSec": WEB_RESEARCH_TIMEOUT_SEC,
@@ -3334,6 +3573,7 @@ def main() -> None:
         print(f"Quarto bin: {quarto_bin}")
     print(f"LLM provider: {llm['provider']} ({'configured' if llm['configured'] else 'not configured'})")
     print(f"LLM model: {llm['model']}")
+    print(f"Slide auto-split: {'on' if SLIDE_AUTO_SPLIT_ENABLED else 'off'}")
     print(
         "Image stage: "
         f"{image['provider']} ({image['model']}, "

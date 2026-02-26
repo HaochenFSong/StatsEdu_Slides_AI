@@ -29,6 +29,7 @@ The app generates editable Quarto Reveal.js slides, renders live previews, suppo
 - Content structure emphasis per slide: definition, context, and student-useful materials
 - R-enabled simulation/plot slides (e.g., histogram, scatter, cluster plot) for concept illustration
 - Base-R-safe rendering path for generated `rChunk` code (auto-avoids missing tidyverse/ggplot dependencies)
+- Automatic dense-slide splitting into continuation slides to reduce overflow in preview/export
 - In-app `.qmd` editing with re-render
 - One-click deck bundle download (`.qmd` + `style.css` + `figures/` as zip)
 - Slide-level protection during refine (`approve` / `lock`)
@@ -83,6 +84,7 @@ http://127.0.0.1:8000
 - `STATEDU_DEFAULT_SLIDE_COUNT` (default: `8`)
 - `STATEDU_MAX_SLIDE_COUNT` (default: `40`)
 - `STATEDU_RENDER_STEP_DELAY_SEC` (default: `0.35`)
+- `STATEDU_SLIDE_AUTO_SPLIT_ENABLED` (`1` or `0`, default: `1`)
 - `STATEDU_WEB_RESEARCH_ENABLED` (`1` or `0`, default: `1`)
 - `STATEDU_WEB_RESEARCH_MAX_RESULTS` (default: `5`)
 - `STATEDU_WEB_RESEARCH_TIMEOUT_SEC` (default: `6`)
