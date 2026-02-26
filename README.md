@@ -32,6 +32,7 @@ The app generates editable Quarto Reveal.js slides, renders live previews, suppo
 - Automatic dense-slide splitting into continuation slides to reduce overflow in preview/export
 - In-app `.qmd` editing with re-render
 - One-click deck bundle download (`.qmd` + `style.css` + `figures/` as zip)
+- UI toggles for per-run `Think Depth` (`fast|standard|deep`) and `Image Style` (`auto|openai|local|none`)
 - Slide-level protection during refine (`approve` / `lock`)
 - Stage-aware progress tracking in workspace and cover page pipeline panel
 - Research-first generation flow (Genspark-style): source upload + web findings -> template -> per-slide content generation -> review -> fact-check -> correction -> image generation -> render
@@ -79,6 +80,7 @@ http://127.0.0.1:8000
 - `STATEDU_PORT` (default: `8000`)
 - `STATEDU_LLM_PROVIDER` (`openai`, `gemini`, `anthropic`, `mock`)
 - `STATEDU_OPENAI_MODEL` / `STATEDU_GEMINI_MODEL` / `STATEDU_ANTHROPIC_MODEL`
+- `STATEDU_DEFAULT_THINK_DEPTH` (`fast`, `standard`, `deep`; default: `standard`)
 - `STATEDU_LLM_TIMEOUT_SEC` (default: unlimited; set to `0`, `none`, or leave unset)
 - `STATEDU_LLM_RETRY_COUNT` (default: `1`, total attempts = `1 + retry_count`)
 - `STATEDU_LLM_RETRY_BACKOFF_SEC` (default: `1.2`)

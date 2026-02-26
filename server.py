@@ -64,6 +64,7 @@ DEFAULT_SLIDE_COUNT = int(os.getenv("STATEDU_DEFAULT_SLIDE_COUNT", "8"))
 MAX_SLIDE_COUNT = int(os.getenv("STATEDU_MAX_SLIDE_COUNT", "40"))
 RENDER_STEP_DELAY_SEC = float(os.getenv("STATEDU_RENDER_STEP_DELAY_SEC", "0.35"))
 VALID_TEACHING_STYLES = {"balanced", "conceptual", "mathematical", "simulation"}
+VALID_THINK_DEPTHS = {"fast", "standard", "deep"}
 WEB_RESEARCH_ENABLED = os.getenv("STATEDU_WEB_RESEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 WEB_RESEARCH_MAX_RESULTS = int(os.getenv("STATEDU_WEB_RESEARCH_MAX_RESULTS", "5"))
 WEB_RESEARCH_TIMEOUT_SEC = int(os.getenv("STATEDU_WEB_RESEARCH_TIMEOUT_SEC", "6"))
@@ -79,6 +80,7 @@ OPENAI_IMAGE_MODEL = os.getenv("STATEDU_OPENAI_IMAGE_MODEL", "gpt-image-1").stri
 OPENAI_IMAGE_SIZE = os.getenv("STATEDU_OPENAI_IMAGE_SIZE", "1536x1024").strip()
 VIDEO_RESEARCH_ENABLED = os.getenv("STATEDU_VIDEO_RESEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 VIDEO_RESEARCH_MAX_RESULTS = max(0, int(os.getenv("STATEDU_VIDEO_RESEARCH_MAX_RESULTS", "2")))
+DEFAULT_THINK_DEPTH = os.getenv("STATEDU_DEFAULT_THINK_DEPTH", "standard").strip().lower()
 
 MAX_SUBTITLE_CHARS = 120
 MAX_BULLET_CHARS = 150
@@ -223,6 +225,39 @@ def resolve_image_provider() -> str:
     if provider == "auto":
         return "openai" if bool(resolve_image_key("openai")) else "local"
     return "local"
+
+
+def normalize_image_style(raw: object) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"", "default"}:
+        return "auto"
+    if value in {"auto", "openai", "local", "none", "off"}:
+        return value
+    if value in {"ai", "generated", "image"}:
+        return "openai"
+    return "auto"
+
+
+def resolve_image_provider_for_request(raw: object) -> str:
+    requested = normalize_image_style(raw)
+    if requested == "auto":
+        return resolve_image_provider()
+    if requested in {"openai", "local", "none", "off"}:
+        return requested
+    return resolve_image_provider()
+
+
+def normalize_think_depth(raw: object) -> str:
+    value = str(raw or "").strip().lower()
+    if value in VALID_THINK_DEPTHS:
+        return value
+    if value in {"", "default"}:
+        return DEFAULT_THINK_DEPTH if DEFAULT_THINK_DEPTH in VALID_THINK_DEPTHS else "standard"
+    if value in {"slow", "max", "extended"}:
+        return "deep"
+    if value in {"quick", "light"}:
+        return "fast"
+    return "standard"
 
 
 def resolve_image_model(provider: str) -> str:
@@ -1802,6 +1837,8 @@ def run_generation_job(job_id: str, deck_params: dict[str, object]) -> None:
             output_format=str(deck_params.get("output_format", "quarto")),
             animation=str(deck_params.get("animation", "step")),
             teaching_style=str(deck_params.get("teaching_style", "balanced")),
+            think_depth=str(deck_params.get("think_depth", "standard")),
+            image_style=str(deck_params.get("image_style", "auto")),
             revision=int(deck_params.get("revision", 1)),
             source_name=str(deck_params.get("source_name", "")),
             source_excerpt=str(deck_params.get("source_excerpt", "")),
@@ -1870,14 +1907,21 @@ def post_json(url: str, payload: dict[str, object], headers: dict[str, str] | No
     raise RuntimeError(f"LLM request failed after {max_attempts} attempt(s): {last_error}")
 
 
-def call_openai_json(system_prompt: str, user_prompt: str) -> dict[str, object]:
+def call_openai_json(system_prompt: str, user_prompt: str, think_depth: str = "standard") -> dict[str, object]:
     key = resolve_llm_key("openai")
     if not key:
         raise RuntimeError("Missing OpenAI API key (`OPENAI_API_KEY` or `STATEDU_OPENAI_API_KEY`).")
+    depth = normalize_think_depth(think_depth)
+    max_completion_tokens = 3200
+    if depth == "fast":
+        max_completion_tokens = 1800
+    elif depth == "deep":
+        max_completion_tokens = 6500
 
     payload = {
         "model": resolve_llm_model("openai"),
         "temperature": 0.2,
+        "max_completion_tokens": max_completion_tokens,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -1899,7 +1943,7 @@ def call_openai_json(system_prompt: str, user_prompt: str) -> dict[str, object]:
     return extract_json_object(str(content))
 
 
-def call_gemini_json(system_prompt: str, user_prompt: str) -> dict[str, object]:
+def call_gemini_json(system_prompt: str, user_prompt: str, think_depth: str = "standard") -> dict[str, object]:
     key = resolve_llm_key("gemini")
     if not key:
         raise RuntimeError("Missing Gemini API key (`GOOGLE_API_KEY` or `STATEDU_GEMINI_API_KEY`).")
@@ -1930,14 +1974,20 @@ def call_gemini_json(system_prompt: str, user_prompt: str) -> dict[str, object]:
     return extract_json_object(text)
 
 
-def call_anthropic_json(system_prompt: str, user_prompt: str) -> dict[str, object]:
+def call_anthropic_json(system_prompt: str, user_prompt: str, think_depth: str = "standard") -> dict[str, object]:
     key = resolve_llm_key("anthropic")
     if not key:
         raise RuntimeError("Missing Anthropic API key (`ANTHROPIC_API_KEY` or `STATEDU_ANTHROPIC_API_KEY`).")
+    depth = normalize_think_depth(think_depth)
+    max_tokens = 2600
+    if depth == "fast":
+        max_tokens = 1800
+    elif depth == "deep":
+        max_tokens = 4200
 
     payload = {
         "model": resolve_llm_model("anthropic"),
-        "max_tokens": 2600,
+        "max_tokens": max_tokens,
         "temperature": 0.2,
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_prompt}],
@@ -1960,13 +2010,13 @@ def call_anthropic_json(system_prompt: str, user_prompt: str) -> dict[str, objec
     return extract_json_object("\n".join(text_parts))
 
 
-def call_provider_json(provider: str, system_prompt: str, user_prompt: str) -> dict[str, object]:
+def call_provider_json(provider: str, system_prompt: str, user_prompt: str, think_depth: str = "standard") -> dict[str, object]:
     if provider == "openai":
-        return call_openai_json(system_prompt, user_prompt)
+        return call_openai_json(system_prompt, user_prompt, think_depth=think_depth)
     if provider == "gemini":
-        return call_gemini_json(system_prompt, user_prompt)
+        return call_gemini_json(system_prompt, user_prompt, think_depth=think_depth)
     if provider == "anthropic":
-        return call_anthropic_json(system_prompt, user_prompt)
+        return call_anthropic_json(system_prompt, user_prompt, think_depth=think_depth)
     raise RuntimeError(f"Unsupported STATEDU_LLM_PROVIDER: {provider}")
 
 
@@ -1978,6 +2028,7 @@ def maybe_generate_with_llm(
     output_format: str,
     animation: str,
     teaching_style: str,
+    think_depth: str,
     target_count: int,
     previous_slides: list[dict[str, object]] | None,
     progress_cb: Callable[[str, float], None] | None = None,
@@ -2065,7 +2116,7 @@ def maybe_generate_with_llm(
         template_user += f"\nExisting slides context:\n{previous_context}\n"
     template_user += "\nReturn JSON only."
 
-    template_raw = call_provider_json(provider, template_system, template_user)
+    template_raw = call_provider_json(provider, template_system, template_user, think_depth=think_depth)
     template_title = sanitize_text(template_raw.get("title", "")) or fallback_title
     template_slides = template_raw.get("template", template_raw.get("slides", []))
     if not isinstance(template_slides, list) or len(template_slides) < 3:
@@ -2146,7 +2197,7 @@ def maybe_generate_with_llm(
         slide_user += "\nReturn JSON only."
 
         try:
-            slide_raw = call_provider_json(provider, slide_system, slide_user)
+            slide_raw = call_provider_json(provider, slide_system, slide_user, think_depth=think_depth)
             raw_slide_obj = slide_raw.get("slide", slide_raw)
             if not isinstance(raw_slide_obj, dict):
                 raise RuntimeError("single-slide stage returned non-object slide")
@@ -2177,7 +2228,7 @@ def maybe_generate_with_llm(
     )
     if research_context:
         review_user += f"\nCheck alignment with these research notes when relevant:\n{research_context}\n"
-    review_raw = call_provider_json(provider, review_system, review_user)
+    review_raw = call_provider_json(provider, review_system, review_user, think_depth=think_depth)
     review_issues_raw = review_raw.get("issues", [])
     review_issues = review_issues_raw if isinstance(review_issues_raw, list) else []
 
@@ -2202,7 +2253,7 @@ def maybe_generate_with_llm(
         fact_user += f"\nSource excerpt:\n{source_excerpt_short}\n"
     fact_user += "\nReturn JSON only."
     try:
-        fact_raw = call_provider_json(provider, fact_system, fact_user)
+        fact_raw = call_provider_json(provider, fact_system, fact_user, think_depth=think_depth)
         fact_needs_correction = bool(fact_raw.get("needsCorrection", False))
         fact_issues_raw = fact_raw.get("issues", [])
         if isinstance(fact_issues_raw, list):
@@ -2241,7 +2292,7 @@ def maybe_generate_with_llm(
         if research_context:
             correct_user += f"\nResearch notes:\n{research_context}\n"
         try:
-            corrected_raw = call_provider_json(provider, correct_system, correct_user)
+            corrected_raw = call_provider_json(provider, correct_system, correct_user, think_depth=think_depth)
             corrected_title = sanitize_text(corrected_raw.get("title", "")) or draft_title
             corrected_slides = corrected_raw.get("slides", [])
             if isinstance(corrected_slides, list) and len(corrected_slides) >= 3:
@@ -2916,11 +2967,12 @@ def generate_external_figures(
     deck_id: str,
     deck_title: str,
     sections: list[dict[str, object]],
+    image_provider: str | None = None,
     progress_cb: Callable[[str, float], None] | None = None,
 ) -> tuple[int, str | None]:
     if progress_cb:
         progress_cb("image_generation", 0.84)
-    provider = resolve_image_provider()
+    provider = resolve_image_provider_for_request(image_provider)
     if not IMAGE_GENERATION_ENABLED or provider in {"none", "off", "local"}:
         return 0, None
     if provider != "openai":
@@ -3114,6 +3166,8 @@ def create_deck(
     output_format: str,
     animation: str,
     teaching_style: str,
+    think_depth: str,
+    image_style: str | None,
     revision: int,
     source_name: str = "",
     source_excerpt: str = "",
@@ -3128,6 +3182,8 @@ def create_deck(
 ) -> dict[str, object]:
     fallback_title = infer_title(prompt)
     teaching_style = normalize_teaching_style(teaching_style)
+    think_depth = normalize_think_depth(think_depth)
+    requested_image_style = normalize_image_style(image_style)
     if requested_slide_count and requested_slide_count > 0:
         requested_count = clamp_slide_count(int(requested_slide_count))
     elif previous_slides:
@@ -3150,6 +3206,7 @@ def create_deck(
             output_format=output_format,
             animation=animation,
             teaching_style=teaching_style,
+            think_depth=think_depth,
             target_count=requested_count,
             previous_slides=previous_slides,
             progress_cb=progress_cb,
@@ -3195,13 +3252,14 @@ def create_deck(
 
     resolved_id = deck_id or uuid.uuid4().hex[:12]
     image_count = 0
-    image_provider_used = resolve_image_provider()
+    image_provider_used = resolve_image_provider_for_request(requested_image_style)
     image_warning: str | None = None
     if output_format == "quarto":
         image_count, image_warning = generate_external_figures(
             deck_id=resolved_id,
             deck_title=title,
             sections=sections,
+            image_provider=image_provider_used,
             progress_cb=progress_cb,
         )
         if image_provider_used == "local":
@@ -3223,6 +3281,8 @@ def create_deck(
         "format": output_format,
         "animation": animation,
         "teachingStyle": teaching_style,
+        "thinkDepth": think_depth,
+        "imageStyle": requested_image_style,
         "sourceName": source_name,
         "sourceExcerpt": source_excerpt,
         "requestedSlideCount": requested_count,
@@ -3360,6 +3420,7 @@ class Handler(BaseHTTPRequestHandler):
                     "llmProvider": llm["provider"],
                     "llmModel": llm["model"],
                     "llmConfigured": llm["configured"],
+                    "defaultThinkDepth": normalize_think_depth(DEFAULT_THINK_DEPTH),
                     "llmTimeoutSec": LLM_TIMEOUT_SEC,
                     "llmRetryCount": LLM_RETRY_COUNT,
                     "renderStepDelaySec": RENDER_STEP_DELAY_SEC,
@@ -3449,6 +3510,8 @@ class Handler(BaseHTTPRequestHandler):
         output_format = "quarto"
         animation = "step"
         teaching_style = "balanced"
+        think_depth = "standard"
+        image_style = "auto"
         requested_slide_count = 0
         source_name = ""
         source_excerpt = ""
@@ -3459,6 +3522,8 @@ class Handler(BaseHTTPRequestHandler):
             output_format = form.getfirst("format", "quarto").strip() or "quarto"
             animation = form.getfirst("animation", "step").strip() or "step"
             teaching_style = normalize_teaching_style(form.getfirst("teachingStyle", "balanced"))
+            think_depth = normalize_think_depth(form.getfirst("thinkDepth", "standard"))
+            image_style = normalize_image_style(form.getfirst("imageStyle", "auto"))
             try:
                 requested_slide_count = int(form.getfirst("requestedSlideCount", "0") or "0")
             except ValueError:
@@ -3479,6 +3544,8 @@ class Handler(BaseHTTPRequestHandler):
             output_format = str(data.get("format", "quarto")).strip() or "quarto"
             animation = str(data.get("animation", "step")).strip() or "step"
             teaching_style = normalize_teaching_style(data.get("teachingStyle", "balanced"))
+            think_depth = normalize_think_depth(data.get("thinkDepth", "standard"))
+            image_style = normalize_image_style(data.get("imageStyle", "auto"))
             requested_slide_count = int(data.get("requestedSlideCount", 0) or 0)
             source_name = str(data.get("sourceName", "")).strip()
 
@@ -3488,6 +3555,8 @@ class Handler(BaseHTTPRequestHandler):
             output_format=output_format,
             animation=animation,
             teaching_style=teaching_style,
+            think_depth=think_depth,
+            image_style=image_style,
             revision=1,
             source_name=source_name,
             source_excerpt=source_excerpt,
@@ -3514,6 +3583,12 @@ class Handler(BaseHTTPRequestHandler):
         teaching_style = normalize_teaching_style(
             current.get("teachingStyle", previous.get("teachingStyle", data.get("teachingStyle", "balanced")))
         )
+        think_depth = normalize_think_depth(
+            current.get("thinkDepth", previous.get("thinkDepth", data.get("thinkDepth", "standard")))
+        )
+        image_style = normalize_image_style(
+            current.get("imageStyle", previous.get("imageStyle", data.get("imageStyle", "auto")))
+        )
         prev_revision = int(previous.get("revision", current.get("revision", 1)) or 1)
         requested_slide_count = int(
             current.get(
@@ -3535,6 +3610,8 @@ class Handler(BaseHTTPRequestHandler):
             output_format=output_format,
             animation=animation,
             teaching_style=teaching_style,
+            think_depth=think_depth,
+            image_style=image_style,
             revision=prev_revision + 1,
             source_name=source_name,
             source_excerpt=source_excerpt,
@@ -3553,6 +3630,8 @@ class Handler(BaseHTTPRequestHandler):
         output_format = "quarto"
         animation = "step"
         teaching_style = "balanced"
+        think_depth = "standard"
+        image_style = "auto"
         requested_slide_count = 0
         source_name = ""
         source_excerpt = ""
@@ -3563,6 +3642,8 @@ class Handler(BaseHTTPRequestHandler):
             output_format = form.getfirst("format", "quarto").strip() or "quarto"
             animation = form.getfirst("animation", "step").strip() or "step"
             teaching_style = normalize_teaching_style(form.getfirst("teachingStyle", "balanced"))
+            think_depth = normalize_think_depth(form.getfirst("thinkDepth", "standard"))
+            image_style = normalize_image_style(form.getfirst("imageStyle", "auto"))
             try:
                 requested_slide_count = int(form.getfirst("requestedSlideCount", "0") or "0")
             except ValueError:
@@ -3583,6 +3664,8 @@ class Handler(BaseHTTPRequestHandler):
             output_format = str(data.get("format", "quarto")).strip() or "quarto"
             animation = str(data.get("animation", "step")).strip() or "step"
             teaching_style = normalize_teaching_style(data.get("teachingStyle", "balanced"))
+            think_depth = normalize_think_depth(data.get("thinkDepth", "standard"))
+            image_style = normalize_image_style(data.get("imageStyle", "auto"))
             requested_slide_count = int(data.get("requestedSlideCount", 0) or 0)
             source_name = str(data.get("sourceName", "")).strip()
 
@@ -3592,6 +3675,8 @@ class Handler(BaseHTTPRequestHandler):
             "output_format": output_format,
             "animation": animation,
             "teaching_style": teaching_style,
+            "think_depth": think_depth,
+            "image_style": image_style,
             "revision": 1,
             "source_name": source_name,
             "source_excerpt": source_excerpt,
@@ -3621,6 +3706,12 @@ class Handler(BaseHTTPRequestHandler):
         teaching_style = normalize_teaching_style(
             current.get("teachingStyle", previous.get("teachingStyle", data.get("teachingStyle", "balanced")))
         )
+        think_depth = normalize_think_depth(
+            current.get("thinkDepth", previous.get("thinkDepth", data.get("thinkDepth", "standard")))
+        )
+        image_style = normalize_image_style(
+            current.get("imageStyle", previous.get("imageStyle", data.get("imageStyle", "auto")))
+        )
         prev_revision = int(previous.get("revision", current.get("revision", 1)) or 1)
         requested_slide_count = int(
             current.get(
@@ -3642,6 +3733,8 @@ class Handler(BaseHTTPRequestHandler):
             "output_format": output_format,
             "animation": animation,
             "teaching_style": teaching_style,
+            "think_depth": think_depth,
+            "image_style": image_style,
             "revision": prev_revision + 1,
             "source_name": source_name,
             "source_excerpt": source_excerpt,
@@ -3723,6 +3816,7 @@ def main() -> None:
         print(f"Quarto bin: {quarto_bin}")
     print(f"LLM provider: {llm['provider']} ({'configured' if llm['configured'] else 'not configured'})")
     print(f"LLM model: {llm['model']}")
+    print(f"Default think depth: {normalize_think_depth(DEFAULT_THINK_DEPTH)}")
     print(f"Slide auto-split: {'on' if SLIDE_AUTO_SPLIT_ENABLED else 'off'}")
     print(f"Web research: {'on' if WEB_RESEARCH_ENABLED else 'off'} (maxResults={WEB_RESEARCH_MAX_RESULTS})")
     print(f"Video research: {'on' if VIDEO_RESEARCH_ENABLED else 'off'} (maxResults={VIDEO_RESEARCH_MAX_RESULTS})")

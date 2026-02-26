@@ -1273,6 +1273,21 @@
         </div>
       </section>
 
+      <section class="block">
+        <h3>Generation Controls</h3>
+        <div class="row" id="think-toggle">
+          <button class="chip" data-value="fast">Fast</button>
+          <button class="chip active" data-value="standard">Standard</button>
+          <button class="chip" data-value="deep">Deep (longer)</button>
+        </div>
+        <div class="row" id="image-toggle" style="margin-top:8px;">
+          <button class="chip active" data-value="auto">Image: Auto</button>
+          <button class="chip" data-value="openai">Image: AI</button>
+          <button class="chip" data-value="local">Image: Local</button>
+          <button class="chip" data-value="none">Image: None</button>
+        </div>
+      </section>
+
       <section id="chat-history" class="chat">
         <div class="bubble ai">Start by attaching a textbook/old slides if you have them. Then describe the lesson outcome, audience level, and slide count.</div>
       </section>
@@ -1396,6 +1411,8 @@
     let selectedFormat = 'quarto';
     let selectedAnimation = 'step';
     let selectedTeachingStyle = 'balanced';
+    let selectedThinkDepth = 'standard';
+    let selectedImageStyle = 'auto';
     let currentDeck = null;
     let qmdLiveTimer = null;
     let qmdViewMode = 'hide';
@@ -1736,6 +1753,26 @@
       });
     }
 
+    function syncThinkDepthToggle(depth) {
+      const raw = String(depth || 'standard').toLowerCase();
+      const allowed = ['fast', 'standard', 'deep'];
+      const normalized = allowed.includes(raw) ? raw : 'standard';
+      selectedThinkDepth = normalized;
+      document.querySelectorAll('#think-toggle .chip').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.value === normalized);
+      });
+    }
+
+    function syncImageStyleToggle(style) {
+      const raw = String(style || 'auto').toLowerCase();
+      const allowed = ['auto', 'openai', 'local', 'none'];
+      const normalized = allowed.includes(raw) ? raw : 'auto';
+      selectedImageStyle = normalized;
+      document.querySelectorAll('#image-toggle .chip').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.value === normalized);
+      });
+    }
+
     function renderDeck(deck, options = {}) {
       const forceReload = Boolean(options.forceReload);
       ensureSlideFlags(deck);
@@ -1745,6 +1782,8 @@
         slideCountInput.value = String(deck.requestedSlideCount);
       }
       syncTeachingStyleToggle(deck.teachingStyle || selectedTeachingStyle);
+      syncThinkDepthToggle(deck.thinkDepth || selectedThinkDepth);
+      syncImageStyleToggle(deck.imageStyle || selectedImageStyle);
 
       if (deck.format === 'quarto' && deck.renderUrl) {
         const baseUrl = String(deck.renderUrl || '');
@@ -1817,8 +1856,7 @@
     }
 
     async function pollJobToDeck(jobId) {
-      const maxPolls = 1200;
-      for (let i = 0; i < maxPolls; i += 1) {
+      for (;;) {
         const data = await fetchJson(`${API_BASE}/jobs/${encodeURIComponent(jobId)}`, { method: 'GET' });
         const job = data.job || {};
         updateProgress(job);
@@ -1834,7 +1872,6 @@
         }
         await new Promise((resolve) => setTimeout(resolve, 450));
       }
-      throw new Error('Render job timed out');
     }
 
     async function callGenerate(promptText, file) {
@@ -1843,6 +1880,8 @@
       formData.append('format', selectedFormat);
       formData.append('animation', selectedAnimation);
       formData.append('teachingStyle', selectedTeachingStyle);
+      formData.append('thinkDepth', selectedThinkDepth);
+      formData.append('imageStyle', selectedImageStyle);
       formData.append('requestedSlideCount', String(slideCountInput.value || '8'));
       if (file) formData.append('file', file);
 
@@ -1863,6 +1902,8 @@
           format: selectedFormat,
           animation: selectedAnimation,
           teachingStyle: selectedTeachingStyle,
+          thinkDepth: selectedThinkDepth,
+          imageStyle: selectedImageStyle,
           requestedSlideCount: Number(slideCountInput.value || 8)
         })
       });
@@ -2066,6 +2107,24 @@
       });
     });
 
+    document.querySelectorAll('#think-toggle .chip').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        syncThinkDepthToggle(btn.dataset.value || 'standard');
+        if (currentDeck) {
+          currentDeck.thinkDepth = selectedThinkDepth;
+        }
+      });
+    });
+
+    document.querySelectorAll('#image-toggle .chip').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        syncImageStyleToggle(btn.dataset.value || 'auto');
+        if (currentDeck) {
+          currentDeck.imageStyle = selectedImageStyle;
+        }
+      });
+    });
+
     downloadQmdBtn.addEventListener('click', async () => {
       if (!currentDeck?.id) return;
       try {
@@ -2110,6 +2169,8 @@
 
     setQmdViewMode('hide');
     syncTeachingStyleToggle('balanced');
+    syncThinkDepthToggle('standard');
+    syncImageStyleToggle('auto');
     if (window.location.hash === '#app') {
       enterWorkspace(false);
     } else if (window.location.hash === '#demo') {
@@ -2128,6 +2189,9 @@
           addMessage(`LLM provider "${health.llmProvider}" is not configured. Generation will use fallback logic until you set an API key.`, 'ai');
         } else if (health.llmProvider !== 'mock') {
           addMessage(`LLM connected: ${health.llmProvider} (${health.llmModel}).`, 'ai');
+        }
+        if (health.defaultThinkDepth) {
+          syncThinkDepthToggle(health.defaultThinkDepth);
         }
         if (health.imageGenerationEnabled && health.imageProvider === 'openai' && !health.imageConfigured) {
           addMessage('Image generation provider "openai" is enabled but not configured. Decks will use local SVG illustrations.', 'ai');
