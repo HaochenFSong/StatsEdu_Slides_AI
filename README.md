@@ -63,6 +63,7 @@ export STATEDU_OPENAI_MODEL=gpt-4.1-mini
 ```
 
 You can also put these in a local `.env` file in the project root. `server.py` now auto-loads `.env` on startup (without overriding already-exported shell variables).
+Start from `.env.example` and fill in your keys locally.
 
 3. Start server:
 
@@ -92,8 +93,13 @@ http://127.0.0.1:8000
 - `STATEDU_SLIDE_AUTO_SPLIT_ENABLED` (`1` or `0`, default: `1`)
 - `STATEDU_R_CHUNK_AUTO_SPLIT_ENABLED` (`1` or `0`, default: `0`; keep `0` to avoid splitting plotting code across slides)
 - `STATEDU_WEB_RESEARCH_ENABLED` (`1` or `0`, default: `1`)
+- `STATEDU_WEB_RESEARCH_PROVIDER` (`auto`, `builtin`, `tavily`, `serpapi`, `hybrid`; default: `auto`)
 - `STATEDU_WEB_RESEARCH_MAX_RESULTS` (default: `5`)
 - `STATEDU_WEB_RESEARCH_TIMEOUT_SEC` (default: `6`)
+- `STATEDU_TAVILY_API_KEY` (optional; enables Tavily web search)
+- `STATEDU_SERPAPI_API_KEY` (optional; enables Google results via SerpAPI)
+- `STATEDU_YOUTUBE_API_KEY` (optional; enables YouTube Data API search for style cues)
+- `STATEDU_WEB_RESEARCH_PREFERRED_DOMAINS` (comma-separated domains for ranking source priority)
 - `STATEDU_VIDEO_RESEARCH_ENABLED` (`1` or `0`, default: `1`)
 - `STATEDU_VIDEO_RESEARCH_MAX_RESULTS` (default: `2`)
 - `STATEDU_IMAGE_GENERATION_ENABLED` (`1` or `0`, default: `1`)
@@ -107,3 +113,4 @@ http://127.0.0.1:8000
 
 - Keep API keys in environment variables only.
 - Generated artifacts are stored under `.statedu/` and are git-ignored by default.
+- Without `STATEDU_TAVILY_API_KEY` or `STATEDU_SERPAPI_API_KEY`, web research falls back to built-in sources (DuckDuckGo Instant + Wikipedia + YouTube feed).

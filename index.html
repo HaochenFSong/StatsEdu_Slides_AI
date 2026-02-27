@@ -2200,6 +2200,15 @@
         } else if (health.llmProvider !== 'mock') {
           addMessage(`LLM connected: ${health.llmProvider} (${health.llmModel}).`, 'ai');
         }
+        if (health.webResearchEnabled) {
+          const mode = health.webResearchProviderMode || 'auto';
+          const tavily = Boolean(health.webResearchTavilyConfigured);
+          const serpapi = Boolean(health.webResearchSerpapiConfigured);
+          addMessage(`Web research mode: ${mode}.`, 'ai');
+          if (!tavily && !serpapi) {
+            addMessage('Web research is currently using built-in sources (DuckDuckGo/Wikipedia). Add Tavily or SerpAPI key for broader retrieval.', 'ai');
+          }
+        }
         if (health.defaultThinkDepth) {
           syncThinkDepthToggle(health.defaultThinkDepth);
         }

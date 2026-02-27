@@ -102,6 +102,18 @@ VALID_THINK_DEPTHS = {"fast", "standard", "deep"}
 WEB_RESEARCH_ENABLED = os.getenv("STATEDU_WEB_RESEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 WEB_RESEARCH_MAX_RESULTS = int(os.getenv("STATEDU_WEB_RESEARCH_MAX_RESULTS", "5"))
 WEB_RESEARCH_TIMEOUT_SEC = int(os.getenv("STATEDU_WEB_RESEARCH_TIMEOUT_SEC", "6"))
+WEB_RESEARCH_PROVIDER = os.getenv("STATEDU_WEB_RESEARCH_PROVIDER", "auto").strip().lower()
+TAVILY_API_KEY = os.getenv("STATEDU_TAVILY_API_KEY", "").strip()
+SERPAPI_API_KEY = os.getenv("STATEDU_SERPAPI_API_KEY", "").strip()
+YOUTUBE_API_KEY = os.getenv("STATEDU_YOUTUBE_API_KEY", "").strip()
+RESEARCH_PREFERRED_DOMAINS = [
+    d.strip().lower()
+    for d in os.getenv(
+        "STATEDU_WEB_RESEARCH_PREFERRED_DOMAINS",
+        "khanacademy.org,statquest.org,youtube.com,openstax.org,wikipedia.org",
+    ).split(",")
+    if d.strip()
+]
 SLIDE_AUTO_SPLIT_ENABLED = os.getenv("STATEDU_SLIDE_AUTO_SPLIT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 R_CHUNK_AUTO_SPLIT_ENABLED = os.getenv("STATEDU_R_CHUNK_AUTO_SPLIT_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 IMAGE_GENERATION_ENABLED = os.getenv("STATEDU_IMAGE_GENERATION_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -152,6 +164,13 @@ RESEARCH_IGNORE_PROMPT_TERMS = {
     "using",
     "based",
     "topic",
+    "and",
+    "exit",
+    "ticket",
+    "check",
+    "misconception",
+    "quick",
+    "prompt",
     "live",
     "coding",
 }
@@ -159,6 +178,7 @@ RESEARCH_STATS_ANCHORS = {
     "statistics",
     "statistical",
     "probability",
+    "normal distribution",
     "inference",
     "hypothesis",
     "p-value",
@@ -178,13 +198,7 @@ RESEARCH_STATS_ANCHORS = {
     "standardization",
     "z-score",
     "dendrogram",
-    "sampling",
-    "distribution",
-    "variance",
-    "covariance",
-    "machine learning",
     "unsupervised learning",
-    "data analysis",
 }
 RESEARCH_BIO_NOISE_TERMS = {
     "musician",
@@ -234,6 +248,12 @@ RESEARCH_QUERY_STOPWORDS = {
     "student",
     "students",
     "undergraduate",
+    "misconception",
+    "check",
+    "exit",
+    "ticket",
+    "quick",
+    "prompt",
 }
 RESEARCH_GENERIC_TERMS = {
     "statistics",
@@ -384,6 +404,25 @@ def image_status() -> dict[str, object]:
     }
 
 
+def normalize_web_research_provider(raw: object) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"auto", "builtin", "tavily", "serpapi", "hybrid"}:
+        return value
+    return "auto"
+
+
+def research_status() -> dict[str, object]:
+    provider_mode = normalize_web_research_provider(WEB_RESEARCH_PROVIDER)
+    return {
+        "enabled": WEB_RESEARCH_ENABLED,
+        "providerMode": provider_mode,
+        "tavilyConfigured": bool(TAVILY_API_KEY),
+        "serpapiConfigured": bool(SERPAPI_API_KEY),
+        "youtubeApiConfigured": bool(YOUTUBE_API_KEY),
+        "preferredDomains": RESEARCH_PREFERRED_DOMAINS[:8],
+    }
+
+
 def fetch_json_url(url: str, timeout_sec: int) -> dict[str, object]:
     req = urlrequest.Request(
         url,
@@ -394,6 +433,31 @@ def fetch_json_url(url: str, timeout_sec: int) -> dict[str, object]:
         method="GET",
     )
     with urlrequest.urlopen(req, timeout=timeout_sec) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+    parsed = json.loads(raw or "{}")
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Expected JSON object response.")
+    return parsed
+
+
+def post_json_url(
+    url: str,
+    payload: dict[str, object],
+    *,
+    headers: dict[str, str] | None = None,
+    timeout_sec: float | None = None,
+) -> dict[str, object]:
+    body = json.dumps(payload).encode("utf-8")
+    req_headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "StatEduSlidesHelperAI/0.3 (+https://localhost)",
+        "Accept": "application/json, text/plain, */*",
+    }
+    if headers:
+        req_headers.update(headers)
+    req = urlrequest.Request(url, data=body, headers=req_headers, method="POST")
+    timeout = WEB_RESEARCH_TIMEOUT_SEC if timeout_sec is None else timeout_sec
+    with urlrequest.urlopen(req, timeout=timeout) as resp:
         raw = resp.read().decode("utf-8", errors="ignore")
     parsed = json.loads(raw or "{}")
     if not isinstance(parsed, dict):
@@ -418,19 +482,25 @@ def tokenize_research_terms(text: str) -> set[str]:
 
 def is_research_item_relevant(*, prompt: str, title: str, snippet: str) -> bool:
     prompt_tokens = tokenize_research_terms(prompt) - RESEARCH_IGNORE_PROMPT_TERMS
+    topic_tokens = tokenize_research_terms(derive_topic_query(prompt, "")) - RESEARCH_IGNORE_PROMPT_TERMS
     high_signal_prompt_tokens = prompt_tokens - RESEARCH_GENERIC_TERMS
     text = f"{title} {snippet}".lower()
     text_tokens = tokenize_research_terms(text)
     overlap = prompt_tokens & text_tokens
     high_signal_overlap = high_signal_prompt_tokens & text_tokens
+    required_high_signal = 1 if len(high_signal_prompt_tokens) <= 2 else 2
+    if topic_tokens:
+        required_topic_overlap = 1 if len(topic_tokens) <= 2 else 2
+        if len(topic_tokens & text_tokens) < required_topic_overlap:
+            return False
 
     if any(anchor in text for anchor in RESEARCH_STATS_ANCHORS):
-        if high_signal_overlap:
+        if len(high_signal_overlap) >= required_high_signal:
             return True
-        if len(overlap) >= 2:
+        if not high_signal_prompt_tokens and len(overlap) >= 1:
             return True
 
-    if len(overlap) >= 2:
+    if len(overlap) >= 2 and len(high_signal_overlap) >= required_high_signal:
         return True
 
     bio_noise_hits = sum(1 for term in RESEARCH_BIO_NOISE_TERMS if term in text)
@@ -514,16 +584,29 @@ def build_web_queries(prompt: str, source_excerpt: str) -> list[str]:
     source_seed = re.sub(r"\s+", " ", source_excerpt).strip()
     source_seed = source_seed[:140]
     topic_query = derive_topic_query(prompt, source_excerpt)
-
-    queries = [
-        prompt_short,
-        f"{prompt_short} statistics explanation",
-        f"{prompt_short} worked example",
-    ]
+    topic_core = ""
     if topic_query:
-        queries.append(topic_query)
-        queries.append(f"{topic_query} statistics")
-        queries.append(f"{topic_query} probability")
+        topic_core_tokens = [t for t in topic_query.split() if t not in {"statistics", "statistical", "probability", "lesson"}]
+        topic_core = " ".join(topic_core_tokens).strip()
+
+    queries: list[str] = []
+    if topic_query:
+        queries.extend(
+            [
+                topic_core or topic_query,
+                f"{topic_core or topic_query} statistics",
+                f"{topic_core or topic_query} worked example",
+                f"{topic_query} statistics lesson",
+                topic_query,
+            ]
+        )
+    queries.extend(
+        [
+            prompt_short,
+            f"{prompt_short} statistics explanation",
+            f"{prompt_short} worked example",
+        ]
+    )
     if source_seed:
         queries.append(f"{prompt_short} {source_seed}")
 
@@ -539,6 +622,91 @@ def build_web_queries(prompt: str, source_excerpt: str) -> list[str]:
         seen.add(key)
         normalized.append(q)
     return normalized[:6]
+
+
+def use_tavily_search() -> bool:
+    mode = normalize_web_research_provider(WEB_RESEARCH_PROVIDER)
+    if mode in {"builtin", "serpapi"}:
+        return False
+    if mode in {"tavily", "hybrid"}:
+        return True
+    # auto
+    return bool(TAVILY_API_KEY)
+
+
+def use_serpapi_search() -> bool:
+    mode = normalize_web_research_provider(WEB_RESEARCH_PROVIDER)
+    if mode in {"builtin", "tavily"}:
+        return False
+    if mode in {"serpapi", "hybrid"}:
+        return True
+    # auto: prefer Tavily when both are available
+    return (not bool(TAVILY_API_KEY)) and bool(SERPAPI_API_KEY)
+
+
+def search_tavily(query: str, limit: int) -> list[dict[str, str]]:
+    if not TAVILY_API_KEY:
+        return []
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "search_depth": "advanced",
+        "max_results": max(1, min(limit, 10)),
+        "include_answer": False,
+        "include_images": False,
+    }
+    data = post_json_url("https://api.tavily.com/search", payload, timeout_sec=WEB_RESEARCH_TIMEOUT_SEC)
+    items = data.get("results", [])
+    if not isinstance(items, list):
+        return []
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in items:
+        if len(results) >= limit:
+            break
+        if not isinstance(entry, dict):
+            continue
+        add_research_item(
+            results,
+            seen,
+            title=entry.get("title", ""),
+            url=entry.get("url", ""),
+            snippet=entry.get("content", ""),
+            provider="tavily",
+            limit=limit,
+        )
+    return results
+
+
+def search_serpapi(query: str, limit: int) -> list[dict[str, str]]:
+    if not SERPAPI_API_KEY:
+        return []
+    url = (
+        "https://serpapi.com/search.json?"
+        f"engine=google&api_key={quote_plus(SERPAPI_API_KEY)}&num={max(1, min(limit, 10))}"
+        f"&q={quote_plus(query)}"
+    )
+    data = fetch_json_url(url, WEB_RESEARCH_TIMEOUT_SEC)
+    items = data.get("organic_results", [])
+    if not isinstance(items, list):
+        return []
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in items:
+        if len(results) >= limit:
+            break
+        if not isinstance(entry, dict):
+            continue
+        add_research_item(
+            results,
+            seen,
+            title=entry.get("title", ""),
+            url=entry.get("link", ""),
+            snippet=entry.get("snippet", ""),
+            provider="serpapi",
+            limit=limit,
+        )
+    return results
 
 
 def search_duckduckgo_instant(query: str, limit: int) -> list[dict[str, str]]:
@@ -629,6 +797,50 @@ def search_wikipedia(query: str, limit: int) -> list[dict[str, str]]:
     return results
 
 
+def search_youtube_api(query: str, limit: int) -> list[dict[str, str]]:
+    if not YOUTUBE_API_KEY or limit <= 0:
+        return []
+    url = (
+        "https://www.googleapis.com/youtube/v3/search?"
+        f"part=snippet&type=video&maxResults={max(1, min(limit, 25))}"
+        f"&q={quote_plus(query)}&key={quote_plus(YOUTUBE_API_KEY)}"
+    )
+    data = fetch_json_url(url, WEB_RESEARCH_TIMEOUT_SEC)
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        return []
+
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in items:
+        if len(results) >= limit:
+            break
+        if not isinstance(entry, dict):
+            continue
+        snippet_obj = entry.get("snippet", {})
+        id_obj = entry.get("id", {})
+        if not isinstance(snippet_obj, dict) or not isinstance(id_obj, dict):
+            continue
+        video_id = sanitize_text(id_obj.get("videoId", ""))
+        if not video_id:
+            continue
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        title = sanitize_text(snippet_obj.get("title", ""))
+        channel = sanitize_text(snippet_obj.get("channelTitle", ""))
+        desc = sanitize_text(snippet_obj.get("description", ""))
+        snippet = desc or (f"Video lesson from {channel}." if channel else "Video lesson reference.")
+        add_research_item(
+            results,
+            seen,
+            title=title,
+            url=url,
+            snippet=snippet,
+            provider="youtube_api",
+            limit=limit,
+        )
+    return results
+
+
 def search_youtube_feed(query: str, limit: int) -> list[dict[str, str]]:
     if limit <= 0:
         return []
@@ -678,6 +890,16 @@ def search_youtube_feed(query: str, limit: int) -> list[dict[str, str]]:
     return results
 
 
+def search_youtube_results(query: str, limit: int) -> list[dict[str, str]]:
+    if YOUTUBE_API_KEY:
+        try:
+            return search_youtube_api(query, limit)
+        except Exception:  # noqa: BLE001
+            # fallback to feed search if API quota/auth fails
+            return search_youtube_feed(query, limit)
+    return search_youtube_feed(query, limit)
+
+
 def is_video_result(item: dict[str, str]) -> bool:
     domain = str(item.get("domain", "")).lower()
     url = str(item.get("url", "")).lower()
@@ -689,6 +911,41 @@ def is_video_result(item: dict[str, str]) -> bool:
         or "vimeo.com" in domain
         or "vimeo.com" in url
     )
+
+
+def score_research_item(item: dict[str, str]) -> int:
+    provider = str(item.get("provider", "")).lower()
+    domain = str(item.get("domain", "")).lower()
+    score = 0
+    if provider in {"tavily", "serpapi"}:
+        score += 4
+    elif provider in {"youtube_api", "youtube"}:
+        score += 3
+    elif provider == "wikipedia":
+        score += 1
+    for idx, preferred in enumerate(RESEARCH_PREFERRED_DOMAINS):
+        if preferred and preferred in domain:
+            score += max(1, 5 - min(idx, 4))
+            break
+    return score
+
+
+def prioritize_research_results(results: list[dict[str, str]], limit: int) -> list[dict[str, str]]:
+    if not results:
+        return []
+    scored = [(score_research_item(item), idx, item) for idx, item in enumerate(results)]
+    scored.sort(key=lambda t: (t[0], -t[1]), reverse=True)
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for _, _, item in scored:
+        url = str(item.get("url", "")).strip().lower()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def derive_video_style_hints(results: list[dict[str, str]]) -> list[str]:
@@ -727,52 +984,52 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
     seen_urls: set[str] = set()
     warnings: list[str] = []
     primary_failures = 0
+    provider_mode = normalize_web_research_provider(WEB_RESEARCH_PROVIDER)
+
+    def add_filtered_items(items: list[dict[str, str]]) -> None:
+        for item in items:
+            if len(aggregated) >= limit:
+                break
+            url = item.get("url", "")
+            title = str(item.get("title", ""))
+            snippet = str(item.get("snippet", ""))
+            if not url or url in seen_urls:
+                continue
+            if not is_research_item_relevant(prompt=prompt, title=title, snippet=snippet):
+                continue
+            seen_urls.add(url)
+            aggregated.append(item)
+
+    primary_backends: list[tuple[str, Callable[[str, int], list[dict[str, str]]]]] = []
+    if use_tavily_search():
+        if TAVILY_API_KEY:
+            primary_backends.append(("tavily", search_tavily))
+        else:
+            warnings.append("tavily key missing")
+    if use_serpapi_search():
+        if SERPAPI_API_KEY:
+            primary_backends.append(("serpapi", search_serpapi))
+        else:
+            warnings.append("serpapi key missing")
+    primary_backends.extend(
+        [
+            ("duckduckgo", search_duckduckgo_instant),
+            ("wikipedia", search_wikipedia),
+        ]
+    )
 
     for query in queries:
         if len(aggregated) >= limit:
             break
-        try:
-            ddg_results = search_duckduckgo_instant(query, limit=limit)
-            for item in ddg_results:
-                url = item.get("url", "")
-                title = str(item.get("title", ""))
-                snippet = str(item.get("snippet", ""))
-                if not url or url in seen_urls:
-                    continue
-                if not is_research_item_relevant(prompt=prompt, title=title, snippet=snippet):
-                    continue
-                seen_urls.add(url)
-                aggregated.append(item)
-                if len(aggregated) >= limit:
-                    break
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"duckduckgo: {exc}")
-            primary_failures += 1
-            if primary_failures >= 2 and not aggregated:
-                break
-
-    if len(aggregated) < limit:
-        for query in queries:
+        for backend_name, backend in primary_backends:
             if len(aggregated) >= limit:
                 break
             try:
-                wiki_results = search_wikipedia(query, limit=limit)
-                for item in wiki_results:
-                    url = item.get("url", "")
-                    title = str(item.get("title", ""))
-                    snippet = str(item.get("snippet", ""))
-                    if not url or url in seen_urls:
-                        continue
-                    if not is_research_item_relevant(prompt=prompt, title=title, snippet=snippet):
-                        continue
-                    seen_urls.add(url)
-                    aggregated.append(item)
-                    if len(aggregated) >= limit:
-                        break
+                add_filtered_items(backend(query, limit=limit))
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"wikipedia: {exc}")
+                warnings.append(f"{backend_name}: {exc}")
                 primary_failures += 1
-                if primary_failures >= 4 and not aggregated:
+                if primary_failures >= 5 and not aggregated:
                     break
 
     if VIDEO_RESEARCH_ENABLED and VIDEO_RESEARCH_MAX_RESULTS > 0:
@@ -781,7 +1038,7 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
             if video_slots <= 0:
                 break
             try:
-                video_results = search_youtube_feed(f"{query} statistics", limit=video_slots)
+                video_results = search_youtube_results(f"{query} statistics lesson", limit=video_slots)
                 for item in video_results:
                     url = item.get("url", "")
                     title = str(item.get("title", ""))
@@ -806,7 +1063,7 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
                 warnings.append(f"youtube: {exc}")
 
     # Fallback: if strict relevance filtering produced nothing but primary providers
-    # were reachable, try relaxed (unfiltered) retrieval from known providers.
+    # were reachable, try relaxed retrieval from known providers.
     if not aggregated and primary_failures == 0:
         relaxed_queries = list(queries)
         topic_query = derive_topic_query(prompt, source_excerpt)
@@ -821,10 +1078,19 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
         for query in relaxed_queries:
             if len(aggregated) >= relaxed_limit:
                 break
-            for fetcher_name, fetcher in (
-                ("wikipedia_fallback", search_wikipedia),
-                ("duckduckgo_fallback", search_duckduckgo_instant),
-            ):
+            fallback_fetchers: list[tuple[str, Callable[[str, int], list[dict[str, str]]]]]
+            fallback_fetchers = []
+            if TAVILY_API_KEY:
+                fallback_fetchers.append(("tavily_fallback", search_tavily))
+            if SERPAPI_API_KEY:
+                fallback_fetchers.append(("serpapi_fallback", search_serpapi))
+            fallback_fetchers.extend(
+                [
+                    ("wikipedia_fallback", search_wikipedia),
+                    ("duckduckgo_fallback", search_duckduckgo_instant),
+                ]
+            )
+            for fetcher_name, fetcher in fallback_fetchers:
                 if len(aggregated) >= relaxed_limit:
                     break
                 try:
@@ -853,13 +1119,16 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"{fetcher_name}: {exc}")
 
+    ranked = prioritize_research_results(aggregated, limit)
     warning = None
-    if not aggregated:
+    if not ranked:
         if primary_failures > 0:
             warning = "Web research unavailable in this environment; continued with prompt/source only."
+        elif provider_mode in {"tavily", "serpapi", "hybrid"} and ("key missing" in " | ".join(warnings).lower()):
+            warning = "Web research provider key missing; fell back to prompt/source only."
         else:
             warning = "No relevant web research results found; continued with prompt/source only."
-    return aggregated[:limit], warning
+    return ranked[:limit], warning
 
 
 def format_research_context(results: list[dict[str, str]]) -> str:
@@ -3824,6 +4093,7 @@ class Handler(BaseHTTPRequestHandler):
             quarto_bin = resolve_quarto_bin()
             llm = llm_status()
             image = image_status()
+            research = research_status()
             self._send_json(
                 200,
                 {
@@ -3842,6 +4112,11 @@ class Handler(BaseHTTPRequestHandler):
                     "webResearchEnabled": WEB_RESEARCH_ENABLED,
                     "webResearchMaxResults": WEB_RESEARCH_MAX_RESULTS,
                     "webResearchTimeoutSec": WEB_RESEARCH_TIMEOUT_SEC,
+                    "webResearchProviderMode": research["providerMode"],
+                    "webResearchTavilyConfigured": research["tavilyConfigured"],
+                    "webResearchSerpapiConfigured": research["serpapiConfigured"],
+                    "youtubeApiConfigured": research["youtubeApiConfigured"],
+                    "webResearchPreferredDomains": research["preferredDomains"],
                     "videoResearchEnabled": VIDEO_RESEARCH_ENABLED,
                     "videoResearchMaxResults": VIDEO_RESEARCH_MAX_RESULTS,
                     "imageGenerationEnabled": image["enabled"],
@@ -4222,6 +4497,7 @@ def main() -> None:
     quarto_bin = resolve_quarto_bin()
     llm = llm_status()
     image = image_status()
+    research = research_status()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Server running at http://{HOST}:{PORT}")
     print(f"Data dir: {DATA_DIR}")
@@ -4233,7 +4509,13 @@ def main() -> None:
     print(f"Default think depth: {normalize_think_depth(DEFAULT_THINK_DEPTH)}")
     print(f"Slide auto-split: {'on' if SLIDE_AUTO_SPLIT_ENABLED else 'off'}")
     print(f"R chunk auto-split: {'on' if R_CHUNK_AUTO_SPLIT_ENABLED else 'off'}")
-    print(f"Web research: {'on' if WEB_RESEARCH_ENABLED else 'off'} (maxResults={WEB_RESEARCH_MAX_RESULTS})")
+    print(
+        "Web research: "
+        f"{'on' if WEB_RESEARCH_ENABLED else 'off'} "
+        f"(providerMode={research['providerMode']}, maxResults={WEB_RESEARCH_MAX_RESULTS}, "
+        f"tavily={'yes' if research['tavilyConfigured'] else 'no'}, "
+        f"serpapi={'yes' if research['serpapiConfigured'] else 'no'})"
+    )
     print(f"Video research: {'on' if VIDEO_RESEARCH_ENABLED else 'off'} (maxResults={VIDEO_RESEARCH_MAX_RESULTS})")
     print(
         "Image stage: "
