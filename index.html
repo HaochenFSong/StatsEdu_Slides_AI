@@ -520,7 +520,7 @@
 
     .left {
       display: grid;
-      grid-template-rows: auto auto 1fr auto;
+      grid-template-rows: auto 1fr auto;
       overflow: hidden;
     }
 
@@ -566,6 +566,50 @@
       color: #fff;
       background: linear-gradient(145deg, #1e66ff, #2682ff);
       box-shadow: 0 6px 14px rgba(30, 102, 255, 0.28);
+    }
+
+    .advanced-settings {
+      margin-top: 8px;
+      border: 1px solid #d9e3f8;
+      border-radius: 12px;
+      background: #f9fbff;
+      padding: 8px 10px;
+    }
+
+    .advanced-settings summary {
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      color: #395789;
+      list-style: none;
+    }
+
+    .advanced-settings summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .advanced-settings summary::before {
+      content: "▸";
+      margin-right: 6px;
+      color: #5a78ad;
+    }
+
+    .advanced-settings[open] summary::before {
+      content: "▾";
+    }
+
+    .advanced-grid {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .advanced-label {
+      font-size: 11px;
+      color: #5c7096;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-right: 4px;
     }
 
     .chat {
@@ -1241,17 +1285,7 @@
   <main id="app-shell" class="app">
     <aside class="panel left">
       <section class="block">
-        <h3>Output Format</h3>
-        <div class="toggles" id="format-toggle">
-          <div class="row">
-            <button class="chip active" data-value="quarto">Quarto (Reveal.js)</button>
-            <button class="chip" data-value="gslides">Google Slides</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="block">
-        <h3>Animation Style</h3>
+        <h3>Deck Setup</h3>
         <div class="row" id="anim-toggle">
           <button class="chip active" data-value="step">Step-by-step bullets</button>
           <button class="chip" data-value="fade">Fade-in text</button>
@@ -1261,31 +1295,38 @@
           <label for="slide-count-input" class="mono" style="color:#4f6894;">Target Slides</label>
           <input id="slide-count-input" class="mini-input" type="number" min="3" max="40" step="1" value="8" />
         </div>
-      </section>
 
-      <section class="block">
-        <h3>Teaching Style Profile</h3>
-        <div class="row" id="style-toggle">
-          <button class="chip active" data-value="balanced">Balanced</button>
-          <button class="chip" data-value="conceptual">Conceptual</button>
-          <button class="chip" data-value="mathematical">Mathematical</button>
-          <button class="chip" data-value="simulation">Simulation-heavy</button>
-        </div>
-      </section>
-
-      <section class="block">
-        <h3>Generation Controls</h3>
-        <div class="row" id="think-toggle">
-          <button class="chip" data-value="fast">Fast</button>
-          <button class="chip active" data-value="standard">Standard</button>
-          <button class="chip" data-value="deep">Deep (longer)</button>
-        </div>
-        <div class="row" id="image-toggle" style="margin-top:8px;">
-          <button class="chip active" data-value="auto">Image: Auto</button>
-          <button class="chip" data-value="openai">Image: AI</button>
-          <button class="chip" data-value="local">Image: Local</button>
-          <button class="chip" data-value="none">Image: None</button>
-        </div>
+        <details id="advanced-settings" class="advanced-settings">
+          <summary>Advanced settings</summary>
+          <div class="advanced-grid">
+            <div class="row">
+              <span class="advanced-label">Teaching style</span>
+              <div class="row" id="style-toggle">
+                <button class="chip active" data-value="balanced">Balanced</button>
+                <button class="chip" data-value="conceptual">Conceptual</button>
+                <button class="chip" data-value="mathematical">Math-heavy</button>
+                <button class="chip" data-value="simulation">Simulation</button>
+              </div>
+            </div>
+            <div class="row">
+              <span class="advanced-label">Think depth</span>
+              <div class="row" id="think-toggle">
+                <button class="chip" data-value="fast">Fast</button>
+                <button class="chip active" data-value="standard">Standard</button>
+                <button class="chip" data-value="deep">Deep</button>
+              </div>
+            </div>
+            <div class="row">
+              <span class="advanced-label">Images</span>
+              <div class="row" id="image-toggle">
+                <button class="chip active" data-value="auto">Auto</button>
+                <button class="chip" data-value="openai">AI</button>
+                <button class="chip" data-value="local">Local</button>
+                <button class="chip" data-value="none">None</button>
+              </div>
+            </div>
+          </div>
+        </details>
       </section>
 
       <section id="chat-history" class="chat">

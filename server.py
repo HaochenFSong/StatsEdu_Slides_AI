@@ -1399,6 +1399,76 @@ def compose_student_bullets(
     return out
 
 
+def polish_visible_sentence(text: object, *, max_chars: int = MAX_BULLET_CHARS) -> str:
+    value = sanitize_bullet_text(text)
+    if not value:
+        return ""
+    value = re.sub(r"\s+", " ", value).strip()
+    # Normalize hanging endings and incomplete punctuation.
+    value = value.rstrip(" \t")
+    value = re.sub(r"[.…]{2,}$", ".", value)
+    if value.endswith((":", ";", ",")):
+        value = value[:-1].rstrip()
+    value = clamp_sentence(value, max_chars)
+    if value and value[-1:] not in ".!?":
+        value += "."
+    if value:
+        value = value[0].upper() + value[1:]
+    return value
+
+
+def polish_sections_for_audience(sections: list[dict[str, object]]) -> tuple[list[dict[str, object]], int]:
+    polished: list[dict[str, object]] = []
+    fixes = 0
+    for idx, raw in enumerate(sections):
+        slide = normalize_slide_obj(raw, idx)
+        layout = str(slide.get("layout", "concept")).lower()
+
+        bullets_out: list[str] = []
+        for bullet in slide.get("bullets", []):
+            before = sanitize_bullet_text(bullet)
+            low = before.lower()
+            if low in {"add key idea.", "add supporting example.", "add key idea", "add supporting example"}:
+                before = "State one key statistical idea in plain language."
+                fixes += 1
+            after = polish_visible_sentence(before, max_chars=MAX_BULLET_CHARS)
+            if not after or is_presenter_directive(after):
+                continue
+            if after not in bullets_out:
+                bullets_out.append(after)
+            if len(bullets_out) >= 6:
+                break
+
+        if len(bullets_out) < 2 and layout not in {"simulation", "formula"}:
+            fill = infer_bullets(f"{slide.get('title', '')}\n{slide.get('subtitle', '')}")
+            for candidate in fill:
+                s = polish_visible_sentence(candidate, max_chars=MAX_BULLET_CHARS)
+                if s and s not in bullets_out:
+                    bullets_out.append(s)
+                if len(bullets_out) >= 2:
+                    break
+            fixes += 1
+
+        slide["bullets"] = bullets_out[:6]
+
+        ex_before = str(slide.get("example", "")).strip()
+        if ex_before:
+            ex_after = polish_sentence_field(ex_before, MAX_EXAMPLE_CHARS)
+            if ex_after != ex_before:
+                fixes += 1
+            slide["example"] = ex_after
+
+        act_before = str(slide.get("activity", "")).strip()
+        if act_before:
+            act_after = polish_sentence_field(act_before, MAX_ACTIVITY_CHARS)
+            if act_after != act_before:
+                fixes += 1
+            slide["activity"] = act_after
+
+        polished.append(slide)
+    return polished, fixes
+
+
 def has_non_base_r_dependencies(code: str) -> bool:
     low = str(code or "").lower()
     patterns = [
@@ -3909,6 +3979,11 @@ def create_deck(
     protected_indexes = sorted(set(locked_norm + approved_norm))
     if protected_indexes and previous_slides:
         sections = merge_protected_slides(previous_slides, sections, protected_indexes, requested_count)
+
+    sections, polish_fixes = polish_sections_for_audience(sections)
+    if polish_fixes > 0:
+        polish_msg = f"Content polish pass fixed {polish_fixes} readability issue(s)."
+        llm_warning = f"{llm_warning}; {polish_msg}" if llm_warning else polish_msg
 
     if output_format == "quarto" and SLIDE_AUTO_SPLIT_ENABLED and not protected_indexes:
         before_count = len(sections)
