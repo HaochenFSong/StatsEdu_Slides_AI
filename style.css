@@ -1,27 +1,30 @@
-.reveal .accent-one {
-  color: #7FC97F !important; 
+:root {
+  --sd-bg: #f6f9ff;
+  --sd-card: rgba(255, 255, 255, 0.78);
+  --sd-card-border: rgba(61, 96, 166, 0.18);
+  --sd-title: #0f244a;
+  --sd-text: #1a1f2b;
+  --sd-muted: #52607a;
+  --sd-accent: #2b66c3;
+  --sd-accent-2: #1593b6;
+  --sd-danger: #a12d4a;
+  --sd-shadow: 0 12px 34px rgba(18, 36, 77, 0.12);
 }
-.reveal .accent-two { 
-  color: #BEAED4 !important; 
+
+.reveal .accent-one { color: #2b66c3 !important; }
+.reveal .accent-two { color: #1593b6 !important; }
+.reveal .accent-three { color: #0f8f6a !important; }
+.reveal .accent-four { color: #b07a21 !important; }
+.reveal .accent-five { color: #6e45b8 !important; }
+.reveal .white-text { color: #ffffff !important; }
+.reveal .red-text { color: var(--sd-danger) !important; }
+.reveal .black-text { color: #111827 !important; }
+
+.reveal {
+  font-family: "Aptos", "Segoe UI", "Source Sans Pro", "Helvetica Neue", sans-serif;
+  color: var(--sd-text);
 }
-.reveal .accent-three { 
-  color: #FDC086 !important; 
-}
-.reveal .accent-four { 
-  color: #FFFF99 !important; 
-}
-.reveal .accent-five { 
-  color: #386CB0 !important; 
-}
-.reveal .white-text {
-  color: #ffffff !important;
-}
-.reveal .red-text {
-  color: red !important;
-}
-.reveal .black-text {
-  color: black !important;
-}
+
 .reveal .quarto-title-block .quarto-title-authors {
   display: block;
 }
@@ -33,50 +36,132 @@
 
 .reveal .slides section {
   text-align: left;
+  color: var(--sd-text);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(246, 250, 255, 0.55));
+  border: 1px solid var(--sd-card-border);
+  border-radius: 22px;
+  box-shadow: var(--sd-shadow);
+  backdrop-filter: blur(2px) saturate(1.02);
+  padding: 0.16em 0.1em 0.1em 0.1em;
 }
 
 .reveal .slides section h2 {
-  font-size: 1.44em;
-  line-height: 1.08;
-  margin-bottom: 0.24em;
+  font-size: 1.34em;
+  line-height: 1.1;
+  color: var(--sd-title);
+  margin: 0 0 0.24em 0;
+  letter-spacing: -0.01em;
 }
 
-.reveal .slides section p,
-.reveal .slides section li {
+.reveal .slides section h2::after {
+  content: "";
+  display: block;
+  width: 2.9em;
+  height: 0.09em;
+  margin-top: 0.2em;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--sd-accent), var(--sd-accent-2));
+}
+
+.reveal .slides section h3 {
   font-size: 0.84em;
-  line-height: 1.26;
+  line-height: 1.2;
+  margin: 0.1em 0 0.22em 0;
+  color: #1f3561;
+  font-weight: 700;
+}
+
+.reveal .slides section p {
+  font-size: 0.73em;
+  line-height: 1.28;
+  color: var(--sd-text);
+}
+
+.reveal .slides section p em {
+  color: #263f73;
+  font-style: italic;
+  font-weight: 500;
 }
 
 .reveal .slides section ul {
-  margin-top: 0.32em;
+  margin-top: 0.26em;
+  margin-bottom: 0.1em;
+}
+
+.reveal .slides section li {
+  font-size: 0.72em;
+  line-height: 1.23;
+  margin: 0.16em 0;
+  color: var(--sd-text);
+}
+
+.reveal .slides section .columns .column {
+  padding-right: 0.6em;
 }
 
 .reveal .slides section blockquote {
-  font-size: 0.72em;
+  font-size: 0.64em;
   line-height: 1.24;
-  padding: 0.45em 0.7em;
-  border-left: 0.18em solid rgba(40, 62, 110, 0.35);
-  background: rgba(241, 246, 255, 0.78);
+  padding: 0.5em 0.74em;
+  margin-top: 0.32em;
+  border-left: 0.16em solid rgba(43, 102, 195, 0.38);
+  background: rgba(238, 245, 255, 0.86);
+  color: var(--sd-muted);
   overflow-wrap: anywhere;
 }
 
-.reveal .slides section {
-  backdrop-filter: saturate(0.96);
-}
-
 .reveal .slide-background-content {
-  filter: saturate(0.86) brightness(1.04);
+  filter: saturate(0.84) brightness(1.04);
 }
 
 .reveal .math.display,
 .reveal .katex-display {
-  font-size: 0.9em;
-  line-height: 1.15;
-  margin: 0.22em 0;
+  font-size: 0.76em;
+  line-height: 1.12;
+  margin: 0.2em 0;
   overflow-wrap: anywhere;
+  padding: 0.16em 0.2em;
+  border-radius: 12px;
+  background: rgba(240, 246, 255, 0.56);
 }
 
 .reveal .slides section .fragment .math.display,
 .reveal .slides section .fragment .katex-display {
-  padding: 0.12em 0;
+  padding: 0.16em 0.2em;
+}
+
+/* Enforce sequential reveal for equations/fragments even with MathJax updates. */
+.reveal .slides section .fragment {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 320ms ease;
+}
+
+.reveal .slides section .fragment.visible,
+.reveal .slides section .fragment.current-fragment {
+  opacity: 1;
+  visibility: visible;
+}
+
+.reveal .slides section .fragment:not(.visible):not(.current-fragment) .MathJax,
+.reveal .slides section .fragment:not(.visible):not(.current-fragment) .katex,
+.reveal .slides section .fragment:not(.visible):not(.current-fragment) .math {
+  opacity: 0 !important;
+}
+
+.reveal .progress {
+  height: 5px;
+  color: var(--sd-accent);
+}
+
+.reveal .controls {
+  color: #2b66c3;
+}
+
+.reveal .slide-number {
+  color: #30435f !important;
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(61, 96, 166, 0.2);
+  border-radius: 10px;
+  padding: 4px 8px;
 }
