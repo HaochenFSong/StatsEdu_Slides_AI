@@ -90,6 +90,7 @@ http://127.0.0.1:8000
 - `STATEDU_MAX_SLIDE_COUNT` (default: `40`)
 - `STATEDU_RENDER_STEP_DELAY_SEC` (default: `0.35`)
 - `STATEDU_SLIDE_AUTO_SPLIT_ENABLED` (`1` or `0`, default: `1`)
+- `STATEDU_R_CHUNK_AUTO_SPLIT_ENABLED` (`1` or `0`, default: `0`; keep `0` to avoid splitting plotting code across slides)
 - `STATEDU_WEB_RESEARCH_ENABLED` (`1` or `0`, default: `1`)
 - `STATEDU_WEB_RESEARCH_MAX_RESULTS` (default: `5`)
 - `STATEDU_WEB_RESEARCH_TIMEOUT_SEC` (default: `6`)

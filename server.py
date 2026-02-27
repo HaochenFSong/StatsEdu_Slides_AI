@@ -103,6 +103,7 @@ WEB_RESEARCH_ENABLED = os.getenv("STATEDU_WEB_RESEARCH_ENABLED", "1").strip().lo
 WEB_RESEARCH_MAX_RESULTS = int(os.getenv("STATEDU_WEB_RESEARCH_MAX_RESULTS", "5"))
 WEB_RESEARCH_TIMEOUT_SEC = int(os.getenv("STATEDU_WEB_RESEARCH_TIMEOUT_SEC", "6"))
 SLIDE_AUTO_SPLIT_ENABLED = os.getenv("STATEDU_SLIDE_AUTO_SPLIT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+R_CHUNK_AUTO_SPLIT_ENABLED = os.getenv("STATEDU_R_CHUNK_AUTO_SPLIT_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 IMAGE_GENERATION_ENABLED = os.getenv("STATEDU_IMAGE_GENERATION_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 IMAGE_PROVIDER = os.getenv("STATEDU_IMAGE_PROVIDER", "auto").strip().lower()
 IMAGE_MAX_SLIDES = max(1, min(MAX_SLIDE_COUNT, int(os.getenv("STATEDU_IMAGE_MAX_SLIDES", "12"))))
@@ -125,6 +126,10 @@ MAX_NOTES_CHARS = 170
 JOBS: dict[str, dict[str, object]] = {}
 JOBS_LOCK = threading.Lock()
 RESEARCH_IGNORE_PROMPT_TERMS = {
+    "create",
+    "make",
+    "build",
+    "generate",
     "slide",
     "slides",
     "lecture",
@@ -140,6 +145,13 @@ RESEARCH_IGNORE_PROMPT_TERMS = {
     "teaching",
     "example",
     "examples",
+    "worked",
+    "work",
+    "for",
+    "about",
+    "using",
+    "based",
+    "topic",
     "live",
     "coding",
 }
@@ -189,6 +201,57 @@ RESEARCH_BIO_NOISE_TERMS = {
     "biography",
     "born",
     "died",
+}
+RESEARCH_QUERY_STOPWORDS = {
+    "create",
+    "make",
+    "build",
+    "generate",
+    "slide",
+    "slides",
+    "deck",
+    "lesson",
+    "lecture",
+    "intro",
+    "introduction",
+    "for",
+    "with",
+    "and",
+    "the",
+    "a",
+    "an",
+    "to",
+    "of",
+    "on",
+    "in",
+    "at",
+    "by",
+    "from",
+    "worked",
+    "example",
+    "examples",
+    "classroom",
+    "student",
+    "students",
+    "undergraduate",
+}
+RESEARCH_GENERIC_TERMS = {
+    "statistics",
+    "statistical",
+    "probability",
+    "distribution",
+    "analysis",
+    "data",
+    "model",
+    "models",
+    "method",
+    "methods",
+    "example",
+    "examples",
+    "intro",
+    "introduction",
+    "lesson",
+    "lecture",
 }
 
 
@@ -355,13 +418,18 @@ def tokenize_research_terms(text: str) -> set[str]:
 
 def is_research_item_relevant(*, prompt: str, title: str, snippet: str) -> bool:
     prompt_tokens = tokenize_research_terms(prompt) - RESEARCH_IGNORE_PROMPT_TERMS
+    high_signal_prompt_tokens = prompt_tokens - RESEARCH_GENERIC_TERMS
     text = f"{title} {snippet}".lower()
     text_tokens = tokenize_research_terms(text)
+    overlap = prompt_tokens & text_tokens
+    high_signal_overlap = high_signal_prompt_tokens & text_tokens
 
     if any(anchor in text for anchor in RESEARCH_STATS_ANCHORS):
-        return True
+        if high_signal_overlap:
+            return True
+        if len(overlap) >= 2:
+            return True
 
-    overlap = prompt_tokens & text_tokens
     if len(overlap) >= 2:
         return True
 
@@ -423,17 +491,39 @@ def add_research_item(
         del bucket[limit:]
 
 
+def derive_topic_query(prompt: str, source_excerpt: str) -> str:
+    seed = f"{prompt}\n{source_excerpt[:220]}".lower()
+    words = re.findall(r"[a-z][a-z0-9\-]{2,}", seed)
+    picked: list[str] = []
+    seen: set[str] = set()
+    for word in words:
+        if word in RESEARCH_QUERY_STOPWORDS:
+            continue
+        if word in seen:
+            continue
+        seen.add(word)
+        picked.append(word)
+        if len(picked) >= 8:
+            break
+    return " ".join(picked)
+
+
 def build_web_queries(prompt: str, source_excerpt: str) -> list[str]:
     prompt_short = re.sub(r"\s+", " ", prompt).strip()
     prompt_short = prompt_short[:180]
     source_seed = re.sub(r"\s+", " ", source_excerpt).strip()
     source_seed = source_seed[:140]
+    topic_query = derive_topic_query(prompt, source_excerpt)
 
     queries = [
         prompt_short,
         f"{prompt_short} statistics explanation",
-        f"{prompt_short} classroom example",
+        f"{prompt_short} worked example",
     ]
+    if topic_query:
+        queries.append(topic_query)
+        queries.append(f"{topic_query} statistics")
+        queries.append(f"{topic_query} probability")
     if source_seed:
         queries.append(f"{prompt_short} {source_seed}")
 
@@ -448,7 +538,7 @@ def build_web_queries(prompt: str, source_excerpt: str) -> list[str]:
             continue
         seen.add(key)
         normalized.append(q)
-    return normalized[:4]
+    return normalized[:6]
 
 
 def search_duckduckgo_instant(query: str, limit: int) -> list[dict[str, str]]:
@@ -716,22 +806,52 @@ def collect_web_research(prompt: str, source_excerpt: str, max_results: int) -> 
                 warnings.append(f"youtube: {exc}")
 
     # Fallback: if strict relevance filtering produced nothing but primary providers
-    # were reachable, keep up to 2 broad Wikipedia results rather than returning
-    # empty research context.
+    # were reachable, try relaxed (unfiltered) retrieval from known providers.
     if not aggregated and primary_failures == 0:
-        try:
-            broad_results = search_wikipedia(prompt, limit=min(2, limit))
-            for item in broad_results:
-                url = item.get("url", "")
-                if not url or url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                aggregated.append(item)
-                if len(aggregated) >= limit:
+        relaxed_queries = list(queries)
+        topic_query = derive_topic_query(prompt, source_excerpt)
+        focus_terms = tokenize_research_terms(topic_query or prompt) - RESEARCH_IGNORE_PROMPT_TERMS
+        high_signal_terms = focus_terms - RESEARCH_GENERIC_TERMS
+        if topic_query:
+            relaxed_queries.append(topic_query)
+            relaxed_queries.append(f"{topic_query} statistics")
+
+        # Keep fallback compact to avoid noisy/irrelevant context.
+        relaxed_limit = min(limit, 3)
+        for query in relaxed_queries:
+            if len(aggregated) >= relaxed_limit:
+                break
+            for fetcher_name, fetcher in (
+                ("wikipedia_fallback", search_wikipedia),
+                ("duckduckgo_fallback", search_duckduckgo_instant),
+            ):
+                if len(aggregated) >= relaxed_limit:
                     break
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"wikipedia_fallback: {exc}")
-            primary_failures += 1
+                try:
+                    relaxed = fetcher(query, limit=relaxed_limit)
+                    for item in relaxed:
+                        url = item.get("url", "")
+                        title = str(item.get("title", ""))
+                        snippet = str(item.get("snippet", ""))
+                        if not url or url in seen_urls:
+                            continue
+                        text = f"{title} {snippet}".lower()
+                        has_anchor = any(anchor in text for anchor in RESEARCH_STATS_ANCHORS)
+                        text_tokens = tokenize_research_terms(text)
+                        overlap = len(focus_terms & text_tokens)
+                        has_high_signal = bool(high_signal_terms & text_tokens) if high_signal_terms else True
+                        required_overlap = 1 if len(focus_terms) <= 2 else 2
+                        has_focus_overlap = overlap >= required_overlap
+                        if not (has_anchor or has_focus_overlap):
+                            continue
+                        if not has_high_signal:
+                            continue
+                        seen_urls.add(url)
+                        aggregated.append(item)
+                        if len(aggregated) >= relaxed_limit:
+                            break
+                except Exception as exc:  # noqa: BLE001
+                    warnings.append(f"{fetcher_name}: {exc}")
 
     warning = None
     if not aggregated:
@@ -1114,6 +1234,17 @@ def sanitize_r_chunk(code: str, label: str) -> str:
     if not cleaned:
         return base_r_fallback_chunk(label)
     if has_non_base_r_dependencies(cleaned):
+        return base_r_fallback_chunk(label)
+    # Guard against split/isolated overlay commands that require an existing plot device.
+    # Example: curve(..., add=TRUE) in a continuation chunk without a preceding plot().
+    if re.search(r"\badd\s*=\s*true\b", cleaned, flags=re.IGNORECASE):
+        cleaned = re.sub(r"\badd\s*=\s*true\b", "add = FALSE", cleaned, flags=re.IGNORECASE)
+    low = cleaned.lower()
+    plot_starters = ("plot(", "hist(", "barplot(", "boxplot(", "qqnorm(", "matplot(", "image(", "curve(")
+    overlay_ops = ("lines(", "abline(", "points(", "segments(", "arrows(")
+    has_plot_starter = any(tok in low for tok in plot_starters)
+    has_overlay_only = (not has_plot_starter) and any(tok in low for tok in overlay_ops)
+    if has_overlay_only:
         return base_r_fallback_chunk(label)
     if not is_likely_complete_r_code(cleaned):
         return base_r_fallback_chunk(label)
@@ -1636,7 +1767,7 @@ def split_slide_for_readability(raw_slide: object, idx: int) -> list[dict[str, o
             )
 
     code_text = str(first.get("rChunk", "")).strip()
-    if code_text:
+    if code_text and R_CHUNK_AUTO_SPLIT_ENABLED:
         code_chunks = split_code_into_chunks(code_text, max_r_lines)
         if len(code_chunks) > 1:
             carry_layout = "simulation"
@@ -3616,6 +3747,7 @@ class Handler(BaseHTTPRequestHandler):
                     "llmRetryCount": LLM_RETRY_COUNT,
                     "renderStepDelaySec": RENDER_STEP_DELAY_SEC,
                     "slideAutoSplitEnabled": SLIDE_AUTO_SPLIT_ENABLED,
+                    "rChunkAutoSplitEnabled": R_CHUNK_AUTO_SPLIT_ENABLED,
                     "webResearchEnabled": WEB_RESEARCH_ENABLED,
                     "webResearchMaxResults": WEB_RESEARCH_MAX_RESULTS,
                     "webResearchTimeoutSec": WEB_RESEARCH_TIMEOUT_SEC,
@@ -4009,6 +4141,7 @@ def main() -> None:
     print(f"LLM model: {llm['model']}")
     print(f"Default think depth: {normalize_think_depth(DEFAULT_THINK_DEPTH)}")
     print(f"Slide auto-split: {'on' if SLIDE_AUTO_SPLIT_ENABLED else 'off'}")
+    print(f"R chunk auto-split: {'on' if R_CHUNK_AUTO_SPLIT_ENABLED else 'off'}")
     print(f"Web research: {'on' if WEB_RESEARCH_ENABLED else 'off'} (maxResults={WEB_RESEARCH_MAX_RESULTS})")
     print(f"Video research: {'on' if VIDEO_RESEARCH_ENABLED else 'off'} (maxResults={VIDEO_RESEARCH_MAX_RESULTS})")
     print(
