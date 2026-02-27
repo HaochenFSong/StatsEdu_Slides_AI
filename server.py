@@ -1350,11 +1350,37 @@ def parse_equation_payload(raw_equation: str) -> tuple[list[str], list[str]]:
         else:
             notes.append(line)
 
+    def split_formula_step(step: str) -> list[str]:
+        value = normalize_equation_tokens(step)
+        if not value:
+            return []
+        # Encourage sequential reveal by splitting common chained expressions.
+        # Keep conservative separators to avoid breaking latex syntax.
+        parts = re.split(r"\s*;\s*", value)
+        out: list[str] = []
+        for part in parts:
+            token = part.strip().strip(",;:")
+            if not token:
+                continue
+            # Split patterns like "z=... , Z~N(0,1)" into 2 reveal steps.
+            subparts = re.split(r"\s*\\+quad\s*,\s*\\+quad\s*", token)
+            for sub in subparts:
+                item = sub.strip().strip(",;:")
+                if not item:
+                    continue
+                # Secondary split for chained clauses in one line.
+                chained = re.split(r"\s*,\s*(?=(?:[A-Za-z]\\+?sim|[A-Za-z]\s*=|P\(|F\(|\\+Phi|z\*?\s*=))", item)
+                for chunk in chained:
+                    cleaned = chunk.strip().strip(",;:")
+                    if cleaned:
+                        out.append(cleaned)
+        return out
+
     cleaned_steps: list[str] = []
     for step in formula_steps:
-        trimmed = step.strip().strip(",;:")
-        if trimmed:
-            cleaned_steps.append(trimmed)
+        for piece in split_formula_step(step):
+            if piece not in cleaned_steps:
+                cleaned_steps.append(piece)
     return cleaned_steps, notes
 
 
@@ -2955,9 +2981,9 @@ def build_qmd(title: str, sections: list[dict[str, object]], animation: str) -> 
         steps, eq_notes = parse_equation_payload(eq)
         if not steps:
             return []
-        if animation in {"step", "fade"} and len(steps) > 1:
-            for step in steps:
-                lines.append("::: {.fragment}")
+        if animation in {"step", "fade"}:
+            for frag_idx, step in enumerate(steps, start=1):
+                lines.append(f'::: {{.fragment data-fragment-index="{frag_idx}"}}')
                 lines.append("$$")
                 lines.append(step)
                 lines.append("$$")
@@ -3256,31 +3282,89 @@ def build_image_prompt(deck_title: str, slide: dict[str, object], idx: int) -> s
     return " ".join(part for part in prompt_parts if part)
 
 
-def call_openai_image(prompt: str) -> bytes:
-    key = resolve_image_key("openai")
-    if not key:
-        raise RuntimeError("Missing OpenAI API key for image generation.")
-    payload = {
-        "model": resolve_image_model("openai"),
-        "prompt": prompt,
-        "size": OPENAI_IMAGE_SIZE,
-        "quality": "medium",
-        "n": 1,
-        "response_format": "b64_json",
-    }
-    data = post_json(
-        "https://api.openai.com/v1/images/generations",
-        payload,
-        headers={"Authorization": f"Bearer {key}"},
+def fetch_binary_url(url: str, timeout_sec: float | None = None) -> bytes:
+    req = urlrequest.Request(
+        url,
+        headers={
+            "User-Agent": "StatEduSlidesHelperAI/0.3 (+https://localhost)",
+            "Accept": "image/*,application/octet-stream,*/*",
+        },
+        method="GET",
     )
+    if timeout_sec is None:
+        with urlrequest.urlopen(req) as resp:
+            return resp.read()
+    with urlrequest.urlopen(req, timeout=timeout_sec) as resp:
+        return resp.read()
+
+
+def decode_openai_image_response(data: dict[str, object]) -> bytes:
     items = data.get("data", [])
     if not isinstance(items, list) or not items:
         raise RuntimeError("OpenAI image response missing data.")
     first = items[0] if isinstance(items[0], dict) else {}
     b64 = str(first.get("b64_json", "")).strip()
-    if not b64:
-        raise RuntimeError("OpenAI image response missing b64_json.")
-    return base64.b64decode(b64)
+    if b64:
+        return base64.b64decode(b64)
+    url = str(first.get("url", "")).strip()
+    if url:
+        return fetch_binary_url(url, timeout_sec=LLM_TIMEOUT_SEC)
+    # Newer/alternative payload shapes.
+    for key in ("image_base64", "base64", "image"):
+        value = first.get(key)
+        if isinstance(value, str) and value.strip():
+            return base64.b64decode(value.strip())
+    raise RuntimeError("OpenAI image response missing image bytes (b64_json/url).")
+
+
+def image_size_for_model(model: str) -> str:
+    name = str(model or "").strip().lower()
+    if name.startswith("dall-e-3"):
+        return "1792x1024"
+    return OPENAI_IMAGE_SIZE
+
+
+def call_openai_image(prompt: str) -> bytes:
+    key = resolve_image_key("openai")
+    if not key:
+        raise RuntimeError("Missing OpenAI API key for image generation.")
+    model_candidates: list[str] = []
+    for candidate in [resolve_image_model("openai"), "gpt-image-1", "dall-e-3"]:
+        c = str(candidate or "").strip()
+        if c and c not in model_candidates:
+            model_candidates.append(c)
+
+    errors: list[str] = []
+    for model in model_candidates:
+        base_payload = {
+            "model": model,
+            "prompt": prompt,
+            "size": image_size_for_model(model),
+            "n": 1,
+        }
+        # Try b64 first, then fallback without response_format for compatibility.
+        variants = [
+            {**base_payload, "quality": "medium", "response_format": "b64_json"},
+            {**base_payload, "quality": "medium"},
+        ]
+        for payload in variants:
+            try:
+                data = post_json(
+                    "https://api.openai.com/v1/images/generations",
+                    payload,
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                return decode_openai_image_response(data)
+            except Exception as exc:  # noqa: BLE001
+                err = sanitize_text(str(exc))
+                errors.append(f"{model}: {err[:180]}")
+                # Hard failures: no point retrying many times across slides.
+                if any(tok in err.lower() for tok in ["invalid_api_key", "incorrect api key", "insufficient_quota", "billing", "forbidden", "permission"]):
+                    raise RuntimeError(f"OpenAI image auth/billing error ({model}): {err[:200]}") from exc
+
+    if errors:
+        raise RuntimeError(f"OpenAI image request failed ({errors[0]})")
+    raise RuntimeError("OpenAI image request failed with no details.")
 
 
 def generate_external_figures(
@@ -3323,16 +3407,23 @@ def generate_external_figures(
                 sections[idx]["figurePath"] = f"figures/{file_name}"
             success += 1
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"slide {idx + 1}: {sanitize_text(str(exc))[:120]}")
+            err_txt = sanitize_text(str(exc))[:220]
+            errors.append(f"slide {idx + 1}: {err_txt}")
+            hard_fail = any(
+                token in err_txt.lower()
+                for token in ("invalid_api_key", "incorrect api key", "insufficient_quota", "billing", "forbidden", "permission")
+            )
+            if hard_fail:
+                break
         if progress_cb:
             p = 0.84 + ((idx + 1) / max_count) * 0.04
             progress_cb(f"image_slide_{idx + 1}", round(p, 4))
 
     warning = None
     if errors and success == 0:
-        warning = "Image generation failed; kept local illustrations."
+        warning = f"Image generation failed; kept local illustrations. ({errors[0]})"
     elif errors:
-        warning = f"Some slide images failed ({len(errors)}); local illustrations kept for the rest."
+        warning = f"Some slide images failed ({len(errors)}); local illustrations kept for the rest. First error: {errors[0]}"
     return success, warning
 
 
